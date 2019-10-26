@@ -7,7 +7,7 @@ local toggle_timer = function (pos)
 	if timer:is_started() then
 		timer:stop()
 	else
-		timer:start(mesecon.setting("blinky_plant_interval", 3))
+		timer:start(mesecon.setting("blinky_plant_interval", 5))
 	end
 end
 
