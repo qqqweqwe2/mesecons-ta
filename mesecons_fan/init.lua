@@ -46,7 +46,12 @@ local function fan_blow(pos)
 	local objs = minetest.get_objects_in_area(pos1, pos2)
 
 	for _, obj in pairs(objs) do
-		obj:add_velocity(vector.multiply(antinormal, -strength))
+        local luaentity = obj:get_luaentity()
+        if luaentity and luaentity.name or obj:is_player() then
+            if obj:is_player() or luaentity.name:find("petz") or luaentity.name:find("builtin") or luaentity.name:find("paleotest") or luaentity.name:find("draconis") then
+		        obj:add_velocity(vector.multiply(antinormal, -strength))
+            end
+        end
 	end
 end
 
