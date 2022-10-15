@@ -62,10 +62,10 @@ local fan_digiline = {
 		action = function(pos, node, channel, msg)
 			local meta = minetest.get_meta(pos)
 			if channel == meta:get_string("digiline_channel") then
-				if fields.range then
+				if fields and fields.range then
 					meta:set_float("range", math.max(0, math.min(tonumber(fields.range) or 5, 8)))
 				end
-				if fields.strength then
+				if fields and fields.strength then
 					meta:set_float("strength", math.max(0, math.min(tonumber(fields.strength) or 5, 8)))
 				end
 				fan_make_formspec(pos)
