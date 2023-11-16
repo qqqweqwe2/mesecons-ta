@@ -57,6 +57,7 @@ for alias, sound in pairs({
 	["mesecons_gamecompat:coalblock"] = mesecon.sound_name.explode,
 	["mesecons_gamecompat:glass"] = "mesecons_noteblock_hihat",
 	["mesecons_gamecompat:obsidian_glass"] = "mesecons_noteblock_hihat",
+	["pipeworks:pipe_3_empty"] = "mesecons_noteblock_pipe",
 }) do
 	local nodename = minetest.registered_aliases[alias]
 	if nodename then
