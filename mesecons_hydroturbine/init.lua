@@ -5,6 +5,13 @@ local S = minetest.get_translator(minetest.get_current_modname())
 -- Active if flowing >water< above it
 -- (does not work with other liquids)
 
+local function is_flowing_water(pos)
+	local name = minetest.get_node(pos).name
+	local is_water = minetest.get_item_group(name, "water") > 0
+	local is_flowing = minetest.registered_items[name].liquidtype == "flowing"
+	return (is_water and is_flowing)
+end
+
 minetest.register_node("mesecons_hydroturbine:hydro_turbine_off", {
 	drawtype = "mesh",
 	mesh = "jeija_hydro_turbine_off.obj",
@@ -30,6 +37,18 @@ minetest.register_node("mesecons_hydroturbine:hydro_turbine_off", {
 		state = mesecon.state.off
 	}},
 	on_blast = mesecon.on_blastnode,
+	on_construct = function(pos)
+		local timer = minetest.get_node_timer(pos)
+		timer:start(1)
+	end,
+	on_timer = function(pos)
+		local waterpos={x=pos.x, y=pos.y+1, z=pos.z}
+		if is_flowing_water(waterpos) then
+			minetest.set_node(pos, {name="mesecons_hydroturbine:hydro_turbine_on"})
+			mesecon.receptor_on(pos)
+		end
+		return true
+	end,
 })
 
 minetest.register_node("mesecons_hydroturbine:hydro_turbine_on", {
@@ -60,9 +79,22 @@ minetest.register_node("mesecons_hydroturbine:hydro_turbine_on", {
 		state = mesecon.state.on
 	}},
 	on_blast = mesecon.on_blastnode,
+	on_construct = function(pos)
+		local timer = minetest.get_node_timer(pos)
+		timer:start(1)
+	end,
+	on_timer = function(pos)
+		local waterpos={x=pos.x, y=pos.y+1, z=pos.z}
+		if not is_flowing_water(waterpos) then
+			minetest.set_node(pos, {name="mesecons_hydroturbine:hydro_turbine_off"})
+			mesecon.receptor_off(pos)
+		end
+		return true
+	end,
 })
 
 
+--[[
 local function is_flowing_water(pos)
 	local name = minetest.get_node(pos).name
 	local is_water = minetest.get_item_group(name, "water") > 0
@@ -93,6 +125,19 @@ nodenames = {"mesecons_hydroturbine:hydro_turbine_on"},
 			minetest.set_node(pos, {name="mesecons_hydroturbine:hydro_turbine_off"})
 			mesecon.receptor_off(pos)
 		end
+	end,
+})
+]]
+
+-- LBM to start timers on existing, ABM-driven nodes
+minetest.register_lbm({
+	name = "mesecons_hydroturbine:timer_init",
+	nodenames = {"mesecons_hydroturbine:hydro_turbine_off",
+			"mesecons_hydroturbine:hydro_turbine_on"},
+	run_at_every_load = false,
+	action = function(pos)
+		local timer = minetest.get_node_timer(pos)
+		timer:start(1)
 	end,
 })
 

@@ -19,6 +19,20 @@ mesecon.register_node("mesecons_solarpanel:solar_panel", {
 	},
 	sounds = mesecon.node_sound.glass,
 	on_blast = mesecon.on_blastnode,
+	on_construct = function(pos)
+		local timer = minetest.get_node_timer(pos)
+		timer:start(1)
+	end,
+	on_timer = function(pos)
+		local light = minetest.get_node_light(pos, nil)
+		local node = minetest.get_node(pos)
+		if light < 12 then
+			node.name = "mesecons_solarpanel:solar_panel_off"
+			minetest.swap_node(pos, node)
+			mesecon.receptor_off(pos, mesecon.rules.wallmounted_get(node))
+		end
+		return true
+	end,
 },{
 	groups = {dig_immediate = 3},
 	mesecons = {receptor = {
@@ -41,6 +55,7 @@ minetest.register_craft({
 	}
 })
 
+--[[
 minetest.register_abm({
 	label = "Solar Panel On/Off",
 	nodenames = {
@@ -61,5 +76,18 @@ minetest.register_abm({
 			minetest.swap_node(pos, node)
 			mesecon.receptor_off(pos, mesecon.rules.wallmounted_get(node))
 		end
+	end,
+})
+]]
+
+-- LBM to start timers on existing, ABM-driven nodes
+minetest.register_lbm({
+	name = "mesecons_solarpanel:timer_init",
+	nodenames = {"mesecons_solarpanel:solar_panel_off",
+			"mesecons_solarpanel:solar_panel_on"},
+	run_at_every_load = false,
+	action = function(pos)
+		local timer = minetest.get_node_timer(pos)
+		timer:start(1)
 	end,
 })
