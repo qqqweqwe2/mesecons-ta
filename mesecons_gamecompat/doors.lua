@@ -82,6 +82,18 @@ local function meseconify_door(name)
 	end
 end
 
+meseconify_door("doors:door_wood")
+meseconify_door("doors:door_steel")
+meseconify_door("doors:door_glass")
+meseconify_door("doors:japanese_door")
+meseconify_door("doors:prison_door")
+meseconify_door("doors:rusty_prison_door")
+meseconify_door("doors:slide_door")
+meseconify_door("doors:screen_door")
+meseconify_door("ethereal:door_sakura")
+meseconify_door("doors:woodglass_door")
+meseconify_door("doors:door_obsidian_glass")
+meseconify_door("xpanes:door_steel_bar")
 -- Trapdoor
 local function trapdoor_switch(name)
 	return function(pos, node)
