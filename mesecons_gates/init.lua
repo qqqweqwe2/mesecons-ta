@@ -147,12 +147,12 @@ local function register_gate(name, inputnumber, assess, recipe, description)
 end
 
 register_gate("diode", 1, function (input) return input end,
-	{{"mesecons:mesecon", "mesecons_torch:mesecon_torch_on", "mesecons_torch:mesecon_torch_on"}},
-	S("Diode"))
+	{ { "mesecons:mesecon", "mesecons_materials:glue", "mesecons_materials:glue" } },
+	"Diode")
 
 register_gate("not", 1, function (input) return not input end,
-	{{"mesecons:mesecon", "mesecons_torch:mesecon_torch_on", "mesecons:mesecon"}},
-	S("NOT Gate"))
+	{ { "mesecons:mesecon", "xtraores:titanium_ingot", "mesecons:mesecon" } },
+	"NOT Gate")
 
 register_gate("and", 2, function (val1, val2) return val1 and val2 end,
 	{{"mesecons:mesecon", "", ""},
@@ -162,7 +162,7 @@ register_gate("and", 2, function (val1, val2) return val1 and val2 end,
 
 register_gate("nand", 2, function (val1, val2) return not (val1 and val2) end,
 	{{"mesecons:mesecon", "", ""},
-	 {"", "mesecons_materials:silicon", "mesecons_torch:mesecon_torch_on"},
+		{ "",                 "mesecons_materials:glue", "xtraores:titanium_ingot" },
 	 {"mesecons:mesecon", "", ""}},
 	S("NAND Gate"))
 
@@ -174,7 +174,7 @@ register_gate("xor", 2, function (val1, val2) return (val1 or val2) and not (val
 
 register_gate("nor", 2, function (val1, val2) return not (val1 or val2) end,
 	{{"mesecons:mesecon", "", ""},
-	 {"", "mesecons:mesecon", "mesecons_torch:mesecon_torch_on"},
+		{ "",                 "mesecons:mesecon", "xtraores:titanium_ingot" },
 	 {"mesecons:mesecon", "", ""}},
 	S("NOR Gate"))
 
