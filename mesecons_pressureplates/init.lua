@@ -139,7 +139,7 @@ mesecon.register_pressure_plate(
 	{"jeija_pressure_plate_wood_on.png","jeija_pressure_plate_wood_on.png","jeija_pressure_plate_wood_on_edges.png"},
 	"jeija_pressure_plate_wood_wield.png",
 	"jeija_pressure_plate_wood_inv.png",
-	{{"group:wood", "group:wood"}},
+	{{"mesecons:wire_00000000_off", "group:wood", "group:wood"}},
 	{ choppy = 3, oddly_breakable_by_hand = 3 },
 	mesecon.node_sound.wood)
 
@@ -150,6 +150,6 @@ mesecon.register_pressure_plate(
 	{"jeija_pressure_plate_stone_on.png","jeija_pressure_plate_stone_on.png","jeija_pressure_plate_stone_on_edges.png"},
 	"jeija_pressure_plate_stone_wield.png",
 	"jeija_pressure_plate_stone_inv.png",
-	{{"mesecons_gamecompat:cobble", "mesecons_gamecompat:cobble"}},
+	{{"mesecons:wire_00000000_off", "mesecons_gamecompat:cobble", "mesecons_gamecompat:cobble"}},
 	{ cracky = 3, oddly_breakable_by_hand = 3 },
 	mesecon.node_sound.stone)
