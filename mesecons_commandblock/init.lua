@@ -14,9 +14,11 @@ minetest.register_chatcommand("say", {
 
 minetest.register_chatcommand("tell", {
 	params = "<name> <text>",
-	description = S("Say <text> to <name> privately"),
+--	description = S("Say <text> to <name> privately"),
+	description = "Deprecated. Use /msg instead",
 	privs = {shout=true},
 	func = function(name, param)
+--[[
 		local found, _, target, message = param:find("^([^%s]+)%s+(.*)$")
 		if found == nil then
 			minetest.chat_send_player(name, "Invalid usage: " .. param)
@@ -26,6 +28,8 @@ minetest.register_chatcommand("tell", {
 			minetest.chat_send_player(name, "Invalid target: " .. target)
 		end
 		minetest.chat_send_player(target, name .. " whispers: " .. message, false)
+]]
+		minetest.chat_send_player(name, "Command /tell is deprecated. Use /msg instead.")
 	end
 })
 
