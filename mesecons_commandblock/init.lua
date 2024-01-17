@@ -162,10 +162,12 @@ local function show_formspec(player, pos)
 	local meta = minetest.get_meta(pos)
 	local owner = meta:get_string("owner")
 	local player_name = player:get_player_name()
-	local may_view = player_name == owner or not owner
+--	local may_view = player_name == owner or not owner
+	local bypasser = minetest.check_player_privs(player_name, "server")
 
 	local r = "invsize[9,5;]"
-	if may_view then
+--	if may_view then
+	if owner == player_name or bypasser then
 		local storagekey = gen_storagekey(pos)
 		local commandstring = mod_storage:get_string(storagekey)
 		if not commandstring or commandstring == "" then
