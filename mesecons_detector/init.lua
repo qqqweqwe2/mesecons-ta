@@ -24,11 +24,13 @@ local function object_detector_make_formspec(pos)
 		"field[0.3,  0;9,2;scanname;Name of player to scan for (empty for any):;${scanname}]"..
 		"field[0.3,1.5;4,2;digiline_channel;Digiline Input Channel (optional):;${digiline_channel}]"..
 		"field[0.3,2.5;4,2;digiline_channel_out;Digiline Output Channel (optional):;${digiline_channel_out}]"..
-		"button_exit[7,0.75;2,3;;Save]")
+		"button_exit[7,0.75;2,3;save;Save]")
 end
 
 local function object_detector_on_receive_fields(pos, _, fields, sender)
 	if minetest.is_protected(pos, sender:get_player_name()) then return end
+
+	if not fields["save"] then return end
 
 	local meta = minetest.get_meta(pos)
 	meta:set_string("scanname", fields.scanname or "")
