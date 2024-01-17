@@ -2,7 +2,8 @@ local S = minetest.get_translator(minetest.get_current_modname())
 
 -- Solar Panel
 mesecon.register_node("mesecons_solarpanel:solar_panel", {
-	description = S("Solar Panel"),
+--	description = S("Solar Panel"),
+	description = S("Daylight Sensor"),
 	drawtype = "nodebox",
 	tiles = {"mesecons_solarpanel.png"},
 	inventory_image = "mesecons_solarpanel.png",
