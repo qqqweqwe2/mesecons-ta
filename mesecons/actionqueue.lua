@@ -89,7 +89,8 @@ local function globalstep_func(dtime)
 	queue.actions = {}
 
 	for _, ac in ipairs(actions) do
-		if ac.time > 0 then
+		--if ac.time > 0 then
+		if ac.time > 0 or pipeworks and not pipeworks.is_active(ac.pos) then -- not loaded
 			-- action ac is to be executed later
 			-- ~> insert into queue.actions
 			ac.time = ac.time - dtime
