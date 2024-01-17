@@ -1,6 +1,8 @@
 local S = minetest.get_translator(minetest.get_current_modname())
 local param_maxlen = mesecon.setting("commandblock_param_maxlen", 10000)
 
+local mod_storage = minetest.get_mod_storage()
+
 minetest.register_chatcommand("say", {
 	params = "<text>",
 	description = S("Say <text> as the server"),
@@ -46,6 +48,10 @@ minetest.register_chatcommand("hp", {
 	end
 })
 
+local function gen_storagekey(pos)
+	return string.format("commands@%d|%d|%d", pos.x, pos.y, pos.z)
+end
+
 local function initialize_data(meta)
 	local commands = minetest.formspec_escape(meta:get_string("commands"))
 --[[
@@ -74,7 +80,8 @@ end
 local function construct(pos)
 	local meta = minetest.get_meta(pos)
 
-	meta:set_string("commands", "tell @nearest Commandblock unconfigured")
+--	meta:set_string("commands", "tell @nearest Commandblock unconfigured")
+	mod_storage:set_string(gen_storagekey(pos), "tell @nearest Commandblock unconfigured")
 
 	meta:set_string("owner", "")
 
@@ -132,7 +139,8 @@ local function receive_fields(sender, formname, fields)
 	if owner ~= "" and player_name ~= owner then
 		return true
 	end
-	meta:set_string("commands", fields.commands)
+--	meta:set_string("commands", fields.commands)
+	mod_storage:set_string(gen_storagekey(pos), fields.commands)
 
 	access_pos[player_name] = nil
 	minetest.close_formspec(player_name, "mesecons:commandblock")
@@ -140,6 +148,11 @@ local function receive_fields(sender, formname, fields)
 end
 
 minetest.register_on_player_receive_fields(receive_fields)
+
+local function old_receive_fields(pos, formname, fields, sender)
+	local meta = minetest.get_meta(pos)
+	meta:set_string("formspec", "")
+end
 
 local function show_formspec(player, pos)
 	local meta = minetest.get_meta(pos)
@@ -149,8 +162,17 @@ local function show_formspec(player, pos)
 
 	local r = "invsize[9,5;]"
 	if may_view then
+		local storagekey = gen_storagekey(pos)
+		local commandstring = mod_storage:get_string(storagekey)
+		if not commandstring or commandstring == "" then
+			commandstring = meta:get_string("commands")
+			if commandstring and commandstring ~= "" then
+				mod_storage:set_string(storagekey, commandstring)
+				meta:set_string("commands", "")
+			end
+		end
 		r = r..
-			"textarea[0.5,0.5;8.5,4;commands;Commands;"..meta:get_string("commands").."]" ..
+			"textarea[0.5,0.5;8.5,4;commands;Commands;"..commandstring.."]" ..
 			"label[1,3.8;@nearest, @farthest, and @random are replaced by the respective player names]" ..
 			"button_exit[3.3,4.5;2,1;submit;Submit]"
 	else
@@ -211,7 +233,21 @@ local function commandblock_action_on(pos, node)
 		return
 	end
 
-	local commands = resolve_commands(meta:get_string("commands"), pos)
+--	local commands = resolve_commands(meta:get_string("commands"), pos)
+	local commandstring
+	if true then
+		local storagekey = gen_storagekey(pos)
+		commandstring = mod_storage:get_string(storagekey)
+		if not commandstring or commandstring == "" then -- handle legacy storage
+			commandstring = meta:get_string("commands")
+			if commandstring and commandstring ~= "" then
+				mod_storage:set_string(storagekey, commandstring)
+				meta:set_string("commands", "")
+			end
+		end
+	end
+
+	local commands = resolve_commands(commandstring, pos)
 	for _, command in pairs(commands:split("\n")) do
 		local pos = command:find(" ")
 		local cmd, param = command, ""
@@ -254,6 +290,10 @@ local function can_dig(pos, player)
 		minetest.check_player_privs(player, "protection_bypass")
 end
 
+local function after_destruct(pos, oldnode)
+	mod_storage:set_string(gen_storagekey(pos), "")
+end
+
 minetest.register_node("mesecons_commandblock:commandblock_off", {
 	description = S("Command Block"),
 	tiles = {"jeija_commandblock_off.png"},
@@ -262,7 +302,8 @@ minetest.register_node("mesecons_commandblock:commandblock_off", {
 	groups = {cracky=2, mesecon_effector_off=1},
 	on_construct = construct,
 	after_place_node = after_place,
-	on_receive_fields = receive_fields,
+	after_destruct = after_destruct,
+	on_receive_fields = old_receive_fields,
 	can_dig = can_dig,
 	sounds = mesecon.node_sound.stone,
 	mesecons = {effector = {
@@ -282,7 +323,8 @@ minetest.register_node("mesecons_commandblock:commandblock_on", {
 	drop = "mesecons_commandblock:commandblock_off",
 	on_construct = construct,
 	after_place_node = after_place,
-	on_receive_fields = receive_fields,
+	after_destruct = after_destruct,
+	on_receive_fields = old_receive_fields,
 	can_dig = can_dig,
 	sounds = mesecon.node_sound.stone,
 	mesecons = {effector = {
