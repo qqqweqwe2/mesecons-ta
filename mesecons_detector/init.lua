@@ -20,20 +20,21 @@ end
 
 local function object_detector_make_formspec(pos)
 	local meta = minetest.get_meta(pos)
-	meta:set_string("formspec", "size[9,2.5]" ..
+	meta:set_string("formspec", "size[9,3.5]" ..
 		"field[0.3,  0;9,2;scanname;Name of player to scan for (empty for any):;${scanname}]"..
-		"field[0.3,1.5;4,2;digiline_channel;Digiline Channel (optional):;${digiline_channel}]"..
+		"field[0.3,1.5;4,2;digiline_channel;Digiline Input Channel (optional):;${digiline_channel}]"..
+		"field[0.3,2.5;4,2;digiline_channel_out;Digiline Output Channel (optional):;${digiline_channel_out}]"..
 		"button_exit[7,0.75;2,3;;Save]")
 end
 
 local function object_detector_on_receive_fields(pos, _, fields, sender)
-	if not fields.scanname or not fields.digiline_channel then return end
-
 	if minetest.is_protected(pos, sender:get_player_name()) then return end
 
 	local meta = minetest.get_meta(pos)
-	meta:set_string("scanname", fields.scanname)
-	meta:set_string("digiline_channel", fields.digiline_channel)
+	meta:set_string("scanname", fields.scanname or "")
+	meta:set_string("digiline_channel", fields.digiline_channel or "")
+	meta:set_string("digiline_channel_out", fields.digiline_channel_out or "")
+
 	object_detector_make_formspec(pos)
 end
 
@@ -47,22 +48,32 @@ local function object_detector_scan(pos)
 	local scanname = minetest.get_meta(pos):get_string("scanname")
 	local scan_for = comma_list_to_table(scanname)
 
+	local result = false
+	local players = {}
+
 	local every_player = scanname == ""
 	for _, obj in pairs(objs) do
 		-- "" is returned if it is not a player; "" ~= nil; so only handle objects with foundname ~= ""
 		local foundname = obj:get_player_name()
 		if foundname ~= "" then
 			if every_player or scan_for[foundname] then
-				return true
+				result = true
 			end
+			table.insert(players, foundname)
 		end
 	end
 
-	return false
+	local output_channel = minetest.get_meta(pos):get_string("digiline_channel_out")
+	if output_channel ~= "" then
+		digilines.receptor_send(pos, digilines.rules.default, output_channel, players)
+	end
+
+	return result
 end
 
 -- set player name when receiving a digiline signal on a specific channel
 local object_detector_digiline = {
+	receptor = {},
 	effector = {
 		action = function(pos, _, channel, msg)
 			local meta = minetest.get_meta(pos)
