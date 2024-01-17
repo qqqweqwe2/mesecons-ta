@@ -48,20 +48,27 @@ minetest.register_chatcommand("hp", {
 
 local function initialize_data(meta)
 	local commands = minetest.formspec_escape(meta:get_string("commands"))
+--[[
 	meta:set_string("formspec",
 		"size[9,5]" ..
 		"textarea[0.5,0.5;8.5,4;commands;Commands;"..commands.."]" ..
 		"label[1,3.8;@nearest, @farthest, and @random are replaced by the respective player names]" ..
 		"button_exit[3.3,4.5;2,1;submit;Submit]")
+]]
 	local owner = meta:get_string("owner")
 	if owner == "" then
 		owner = "not owned"
 	else
 		owner = "owned by " .. owner
 	end
+--[[
 	meta:set_string("infotext", "Command Block\n" ..
 		"(" .. owner .. ")\n" ..
 		"Commands: "..commands)
+]]
+	meta:set_string("infotext", "Command Block\n" ..
+		"(" .. owner .. ")")
+
 end
 
 local function construct(pos)
@@ -82,6 +89,9 @@ local function after_place(pos, placer)
 	end
 end
 
+local access_pos = {} -- used to keep track of what node a shown formspec corresponds to
+
+--[[
 local function receive_fields(pos, _, fields, sender)
 	if not fields.submit then
 		return
@@ -94,6 +104,63 @@ local function receive_fields(pos, _, fields, sender)
 	meta:set_string("commands", fields.commands)
 
 	initialize_data(meta)
+end
+]]
+
+local access_pos = {} -- used to keep track of what node a shown formspec corresponds to
+
+local function receive_fields(sender, formname, fields)
+	if formname ~= "mesecons:commandblock" then
+		return false
+	end
+
+	local player_name = sender:get_player_name()
+	local pos = access_pos[player_name] or nil
+
+	if fields.close or not pos then
+		access_pos[player_name] = nil
+		minetest.close_formspec(player_name, "mesecons:commandblock")
+		return true
+	end
+	if not fields.submit then
+		return true
+	end
+
+	local pos = access_pos[player_name]
+	local meta = minetest.get_meta(pos)
+	local owner = meta:get_string("owner")
+	if owner ~= "" and player_name ~= owner then
+		return true
+	end
+	meta:set_string("commands", fields.commands)
+
+	access_pos[player_name] = nil
+	minetest.close_formspec(player_name, "mesecons:commandblock")
+	return true
+end
+
+minetest.register_on_player_receive_fields(receive_fields)
+
+local function show_formspec(player, pos)
+	local meta = minetest.get_meta(pos)
+	local owner = meta:get_string("owner")
+	local player_name = player:get_player_name()
+	local may_view = player_name == owner or not owner
+
+	local r = "invsize[9,5;]"
+	if may_view then
+		r = r..
+			"textarea[0.5,0.5;8.5,4;commands;Commands;"..meta:get_string("commands").."]" ..
+			"label[1,3.8;@nearest, @farthest, and @random are replaced by the respective player names]" ..
+			"button_exit[3.3,4.5;2,1;submit;Submit]"
+	else
+		r = r..
+			"label[1,3.8;only the owner may view and edit the code]" ..
+			"button_exit[3.3,4.5;2,1;close;Exit]"
+	end
+
+	access_pos[player_name] = pos
+	minetest.show_formspec(player_name, "mesecons:commandblock", r)
 end
 
 local function resolve_commands(commands, pos)
@@ -202,6 +269,9 @@ minetest.register_node("mesecons_commandblock:commandblock_off", {
 		action_on = commandblock_action_on
 	}},
 	on_blast = mesecon.on_blastnode,
+	on_rightclick = function(pos, node, clicker, itemstack, pointed_thing)
+		show_formspec(clicker, pos)
+	end
 })
 
 minetest.register_node("mesecons_commandblock:commandblock_on", {
@@ -219,4 +289,7 @@ minetest.register_node("mesecons_commandblock:commandblock_on", {
 		action_off = commandblock_action_off
 	}},
 	on_blast = mesecon.on_blastnode,
+	on_rightclick = function(pos, node, clicker, itemstack, pointed_thing)
+		show_formspec(clicker, pos)
+	end
 })
