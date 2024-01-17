@@ -345,6 +345,7 @@ if mesecon.setting("luacontroller_lightweight_interrupts", false) then
 		return (function(time, iid)
 			if type(time) ~= "number" then error("Delay must be a number") end
 			if iid ~= nil then send_warning("Interrupt IDs are disabled on this server") end
+			if time < 1 then error("Delay cannot be faster than 1 second") end
 			table.insert(itbl, function() minetest.get_node_timer(pos):start(time) end)
 		end)
 	end
