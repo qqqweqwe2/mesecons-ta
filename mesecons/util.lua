@@ -331,7 +331,7 @@ function mesecon.file2table(filename)
 	local t = f:read("*all")
 	f:close()
 	if t == "" or t == nil then return {} end
-	return minetest.deserialize(t)
+	return minetest.deserialize(t) or {}
 end
 
 function mesecon.table2file(filename, table)
