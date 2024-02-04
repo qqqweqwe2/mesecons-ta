@@ -28,7 +28,7 @@ minetest.register_craft({
 	recipe = "mesecons_materials:sap",
 	cooktime = 4
 })
-
+--[[
 -- Silicon
 minetest.register_craftitem("mesecons_materials:silicon", {
 	inventory_image = "mesecons_silicon.png",
@@ -43,3 +43,4 @@ minetest.register_craft({
 		{"group:sand", "mesecons_gamecompat:steel_ingot"},
 	}
 })
+]]
