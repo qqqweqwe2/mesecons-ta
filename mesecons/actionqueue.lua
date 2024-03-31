@@ -39,6 +39,8 @@ end
 function queue:add_action(pos, func, params, time, overwritecheck, priority)
 	-- Create Action Table:
 	time = time or 0 -- time <= 0 --> execute, time > 0 --> wait time until execution
+	if pipeworks and not pipeworks.is_active(pos) then return end
+
 	priority = priority or 1
 	local action = {
 		pos = mesecon.tablecopy(pos),
@@ -89,12 +91,13 @@ local function globalstep_func(dtime)
 	queue.actions = {}
 
 	for _, ac in ipairs(actions) do
-		--if ac.time > 0 then
-		if ac.time > 0 or pipeworks and not pipeworks.is_active(ac.pos) then -- not loaded
+		if ac.time > 0  then -- not loaded
 			-- action ac is to be executed later
 			-- ~> insert into queue.actions
-			ac.time = ac.time - dtime
-			table.insert(queue.actions, ac)
+			if pipeworks and pipeworks.is_active(ac.pos) then
+				ac.time = ac.time - dtime
+				table.insert(queue.actions, ac)
+			end
 		else
 			-- action ac is to be executed now
 			-- ~> insert into actions_now
@@ -132,7 +135,6 @@ function queue:execute(action)
 		self.funcs[action.func](action.pos, unpack(action.params))
 	end
 end
-
 
 -- Store and read the ActionQueue to / from a file
 -- so that upcoming actions are remembered when the game
