@@ -99,19 +99,7 @@ minetest.register_node("mesecons_detector:object_detector_off", {
 		state = mesecon.state.off,
 		rules = mesecon.rules.pplate
 	}},
-	on_construct = function(pos)
-		object_detector_make_formspec(pos)
-		local timer = minetest.get_node_timer(pos)
-		timer:start(1)
-	end,
-	on_timer = function(pos)
-		if not object_detector_scan(pos) then return true end
-		local node = minetest.get_node(pos)
-		node.name = "mesecons_detector:object_detector_on"
-		minetest.swap_node(pos, node)
-		mesecon.receptor_on(pos, mesecon.rules.pplate)
-		return true
-	end,
+	on_construct = object_detector_make_formspec,
 	on_receive_fields = object_detector_on_receive_fields,
 	sounds = mesecon.node_sound.stone,
 	digiline = object_detector_digiline,
@@ -129,19 +117,7 @@ minetest.register_node("mesecons_detector:object_detector_on", {
 		state = mesecon.state.on,
 		rules = mesecon.rules.pplate
 	}},
-	on_construct = function(pos)
-		object_detector_make_formspec(pos)
-		local timer = minetest.get_node_timer(pos)
-		timer:start(1)
-	end,
-	on_timer = function(pos)
-		if object_detector_scan(pos) then return true end
-		local node = minetest.get_node(pos)
-		node.name = "mesecons_detector:object_detector_off"
-		minetest.swap_node(pos, node)
-		mesecon.receptor_off(pos, mesecon.rules.pplate)
-		return true
-	end,
+	on_construct = object_detector_make_formspec,
 	on_receive_fields = object_detector_on_receive_fields,
 	sounds = mesecon.node_sound.stone,
 	digiline = object_detector_digiline,
@@ -168,8 +144,6 @@ minetest.register_craft({
 	}
 })
 
---[[
-
 minetest.register_abm({
 	nodenames = {"mesecons_detector:object_detector_off"},
 	interval = 1,
@@ -195,7 +169,6 @@ minetest.register_abm({
 		mesecon.receptor_off(pos, mesecon.rules.pplate)
 	end,
 })
-]]
 
 -- Node detector
 -- Detects the node in front of it
@@ -244,7 +217,6 @@ local function node_detector_scan(pos)
 		(frontname ~= "air" and frontname ~= "ignore" and scanname == "")
 end
 
---[[
 local function node_detector_send_node_name(pos, node, channel, meta)
 	local distance = meta:get_int("distance")
 	local distance_max = mesecon.setting("node_detector_distance_max", 10)
@@ -256,7 +228,6 @@ local function node_detector_send_node_name(pos, node, channel, meta)
 
 	digiline:receptor_send(pos, digiline.rules.default, channel, nodename)
 end
-]]
 
 -- set player name when receiving a digiline signal on a specific channel
 local node_detector_digiline = {
@@ -264,14 +235,8 @@ local node_detector_digiline = {
 		action = function(pos, node, channel, msg)
 			local meta = minetest.get_meta(pos)
 
-			local distance = meta:get_int("distance")
-			local distance_max = mesecon.setting("node_detector_distance_max", 10)
-			if distance < 0 then distance = 0 end
-			if distance > distance_max then distance = distance_max end
-
 			if channel ~= meta:get_string("digiline_channel") then return end
 
---[[
 			if type(msg) == "table" then
 				if msg.distance or msg.scanname then
 					if type(msg.distance) == "number" or type(msg.distance) == "string" then
@@ -288,25 +253,13 @@ local node_detector_digiline = {
 					local result = node_detector_scan(pos)
 					digiline:receptor_send(pos, digiline.rules.default, channel, result)
 				end
-]]
-			if msg == GET_COMMAND then
-				local nodename = minetest.get_node(
-					vector.subtract(pos, vector.multiply(minetest.facedir_to_dir(node.param2), distance + 1))
-				).name
-
-				digiline:receptor_send(pos, digiline.rules.default, channel, nodename)
-
 			else
---[[
 				if msg == GET_COMMAND then
 					node_detector_send_node_name(pos, node, channel, meta)
 				elseif type(msg) == "string" then
 					meta:set_string("scanname", msg)
 					node_detector_make_formspec(pos)
 				end
-]]
-				meta:set_string("scanname", msg)
-				node_detector_make_formspec(pos)
 			end
 		end,
 	},
@@ -324,19 +277,7 @@ minetest.register_node("mesecons_detector:node_detector_off", {
 	mesecons = {receptor = {
 		state = mesecon.state.off
 	}},
-	on_construct = function(pos)
-		node_detector_make_formspec(pos)
-		local timer = minetest.get_node_timer(pos)
-		timer:start(1)
-	end,
-	on_timer = function(pos)
-		if not node_detector_scan(pos) then return true end
-		local node = minetest.get_node(pos)
-		node.name = "mesecons_detector:node_detector_on"
-		minetest.swap_node(pos, node)
-		mesecon.receptor_on(pos)
-		return true
-	end,
+	on_construct = node_detector_make_formspec,
 	on_receive_fields = node_detector_on_receive_fields,
 	sounds = mesecon.node_sound.stone,
 	digiline = node_detector_digiline,
@@ -354,19 +295,7 @@ minetest.register_node("mesecons_detector:node_detector_on", {
 	mesecons = {receptor = {
 		state = mesecon.state.on
 	}},
-	on_construct = function(pos)
-		node_detector_make_formspec(pos)
-		local timer = minetest.get_node_timer(pos)
-		timer:start(1)
-	end,
-	on_timer = function(pos)
-		if node_detector_scan(pos) then return true end
-		local node = minetest.get_node(pos)
-		node.name = "mesecons_detector:node_detector_off"
-		minetest.swap_node(pos, node)
-		mesecon.receptor_off(pos)
-		return true
-	end,
+	on_construct = node_detector_make_formspec,
 	on_receive_fields = node_detector_on_receive_fields,
 	sounds = mesecon.node_sound.stone,
 	digiline = node_detector_digiline,
@@ -393,7 +322,6 @@ minetest.register_craft({
 	}
 })
 
---[[
 minetest.register_abm({
 	nodenames = {"mesecons_detector:node_detector_off"},
 	interval = 1,
@@ -417,20 +345,5 @@ minetest.register_abm({
 		node.name = "mesecons_detector:node_detector_off"
 		minetest.swap_node(pos, node)
 		mesecon.receptor_off(pos)
-	end,
-})
-]]
-
--- LBM to start timers on existing, ABM-driven nodes
-minetest.register_lbm({
-	name = "mesecons_detector:timer_init",
-	nodenames = {"mesecons_detector:object_detector_off",
-			"mesecons_detector:object_detector_on", 
-			"mesecons_detector:node_detector_off", 
-			"mesecons_detector:node_detector_on"},
-	run_at_every_load = false,
-	action = function(pos)
-		local timer = minetest.get_node_timer(pos)
-		timer:start(1)
 	end,
 })
