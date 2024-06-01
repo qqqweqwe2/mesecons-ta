@@ -585,6 +585,20 @@ local function create_environment(pos, mem, event, itbl, send_warning)
 			time = os.time,
 			datetable = safe_date,
 		},
+		bit = {
+			tobit = bit.tobit,
+			tohex = bit.tohex,
+			bnot = bit.bnot,
+			bor = bit.bor,
+			band = bit.band,
+			bxor = bit.bxor,
+			lshift = bit.lshift,
+			rshift = bit.rshift,
+			arshift = bit.arshift,
+			rol = bit.rol,
+			ror = bit.ror,
+			bswap = bit.bswap,
+		},
 	}
 	env._G = env
 
