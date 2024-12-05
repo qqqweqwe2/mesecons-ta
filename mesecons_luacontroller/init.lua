@@ -769,11 +769,11 @@ end
 
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
-    if code and #code > 12000 then
-        code = code:sub(1, 12000)
-        minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 12,000 characters.")
+    if code and #code > 35000 then
+        code = code:sub(1, 35000)
+        minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 35,000 characters.")
         minetest.after(1, function()
-            errmsg = "Code truncated to 12,000 characters. Please shorten your script."
+            errmsg = "Code truncated to 35,000 characters. Please shorten your script."
 	        reset_formspec(meta, code, errmsg)
         end)
     end
