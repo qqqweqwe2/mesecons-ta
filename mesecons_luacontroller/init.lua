@@ -759,11 +759,11 @@ local function reset_formspec(meta, code, errmsg)
 	meta:set_string("formspec", "formspec_version[2]"
 		.."size[15,12]"
 		.."style_type[label,textarea;font=mono]"
-		.."background[0,0;15,12;jeija_luac_background.png]"
-		.."textarea[0.2,0.5;14.6,9.0;code;;"..code.."]"
-		.."textarea[0.2,9.8;14.6,1.0;;;"..errmsg.."]"
-		.."image_button[6.25,10.8;2.5,1;jeija_luac_runbutton.png;program;]"
-		.."image_button_exit[14.5,0;0.4,0.387;jeija_close_window.png;exit;]"
+		.."background[-0.2,-0.25;12.4,10.75;jeija_luac_background.png]"
+		.."hypertext[0.3,8.35;13,1;error;"..errmsg.."]"
+		.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+		.."image_button[4.75,9.25;2.5,0.8;jeija_luac_runbutton.png;program;]"
+		.."image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
 		)
 end
 
