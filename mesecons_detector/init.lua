@@ -79,8 +79,7 @@ local object_detector_digiline = {
 	effector = {
 		action = function(pos, _, channel, msg)
 			local meta = minetest.get_meta(pos)
-			if channel == meta:get_string("digiline_channel") and
-					(type(msg) == "string" or type(msg) == "number") then
+			if channel == meta:get_string("digiline_channel") and type(msg) == "string" then
 				meta:set_string("scanname", msg)
 				object_detector_make_formspec(pos)
 			end
