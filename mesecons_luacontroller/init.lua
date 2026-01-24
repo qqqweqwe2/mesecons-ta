@@ -750,21 +750,43 @@ local function run_inner(pos, code, event)
 	return true, warning
 end
 
-local function reset_formspec(meta, code, errmsg)
-	code = code or ""
+local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
 	meta:set_string("code", code)
 	meta:mark_as_private("code")
 	code = minetest.formspec_escape(code)
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
-	meta:set_string("formspec", "formspec_version[2]"
-		.."size[15,12]"
+	selected_tab = selected_tab or 1
+	mem_text = mem_text or ""
+	local tab_sel = tostring(selected_tab)
+	local formspec = "size[12,10]"
 		.."style_type[label,textarea;font=mono]"
 		.."background[-0.2,-0.25;12.4,10.75;jeija_luac_background.png]"
 		.."hypertext[0.3,8.35;13,1;error;"..errmsg.."]"
-		.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
-		.."image_button[4.75,9.25;2.5,0.8;jeija_luac_runbutton.png;program;]"
-		.."image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
-		)
+		.."tabheader[0,0;luac_tab;Code,Memory;"..tab_sel..";false;false]"
+
+	if selected_tab == 1 then
+		formspec = formspec
+			.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+			.."image_button[4.75,9.25;2.5,0.8;jeija_luac_runbutton.png;program;]"
+	else
+		-- mem_text should already be escaped by caller
+		formspec = formspec
+			.."textarea[0.2,0.2;12.2,9.5;;;"..mem_text.."]"
+		-- Auto-refresh checkbox stored per-node in meta as luac_mem_autorefresh (1 = on, 0 = off).
+		local autoref = meta:get_int("luac_mem_autorefresh")
+		-- default to enabled if unset
+		if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
+		if autoref == 1 then
+			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;true]"
+			-- when autoref is enabled, no manual refresh button
+		else
+			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;false]"
+			formspec = formspec .. "button[4.75,9.25;2.5,0.8;refresh;Refresh]"
+		end
+	end
+
+	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
+	meta:set_string("formspec", formspec)
 end
 
 local function reset_meta(pos, code, errmsg)
@@ -774,10 +796,10 @@ local function reset_meta(pos, code, errmsg)
         minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 35,000 characters.")
         minetest.after(1, function()
             errmsg = "Code truncated to 35,000 characters. Please shorten your script."
-	        reset_formspec(meta, code, errmsg)
+			reset_formspec(meta, code, errmsg, 1, "")
         end)
     end
-	reset_formspec(meta, code, errmsg)
+	reset_formspec(meta, code, errmsg, 1, "")
 	meta:set_int("luac_id", math.random(1, 65535))
 end
 
@@ -789,7 +811,24 @@ local function run(pos, event)
 	if not ok then
 		reset_meta(pos, code, errmsg)
 	else
-		reset_formspec(meta, code, errmsg)
+		-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
+		local sel = meta:get_int("luac_tab_sel")
+		if sel == 0 then sel = 1 end
+		if sel ~= 2 then
+			-- default: show Code tab
+			reset_formspec(meta, code, errmsg, 1, "")
+		else
+			-- If Memory tab is selected, only refresh formspec when autorefresh is enabled.
+			local autoref = meta:get_int("luac_mem_autorefresh")
+			if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
+			if autoref == 1 then
+				local mem = load_memory(meta)
+				local mem_text = minetest.formspec_escape(dump(mem))
+				reset_formspec(meta, code, errmsg, 2, mem_text)
+			else
+				-- autoref disabled: do not rebuild the formspec on external events
+			end
+		end
 	end
 	return ok, errmsg
 end
@@ -874,18 +913,69 @@ local function on_construct(pos)
 end
 
 local function on_receive_fields(pos, _, fields, sender)
-	if not fields.program then
+	-- Handle programming, tab switching and memory refresh
+	if fields.program then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
+		local ok, err = set_program(pos, fields.code)
+		if not ok then
+			minetest.log("action", "Lua controller programming error: " .. tostring(err))
+		end
 		return
 	end
-	local name = sender:get_player_name()
-	if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
-		minetest.record_protection_violation(pos, name)
+
+	if fields.luac_tab then
+		local sel = tonumber(fields.luac_tab) or 1
+		local meta = minetest.get_meta(pos)
+		meta:set_int("luac_tab_sel", sel)
+		-- Ensure autorefresh is enabled when switching back to Code
+		if sel == 1 then meta:set_int("luac_mem_autorefresh", 1) end
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem_text = ""
+		if sel == 2 then
+			local mem = load_memory(meta)
+			mem_text = minetest.formspec_escape(dump(mem))
+		end
+		reset_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
-	local ok, err = set_program(pos, fields.code)
-	if not ok then
-		-- it's not an error from the server perspective
-		minetest.log("action", "Lua controller programming error: " .. tostring(err))
+
+	-- Handle autorefresh checkbox toggle
+	if fields.mem_autoref ~= nil then
+		local meta = minetest.get_meta(pos)
+		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
+		local enabled = (fields.mem_autoref == "true") and 1 or 0
+		meta:set_int("luac_mem_autorefresh", enabled)
+		-- Rebuild formspec to reflect new checkbox/button state
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem_text = ""
+		if sel == 2 then
+			local mem = load_memory(meta)
+			mem_text = minetest.formspec_escape(dump(mem))
+		end
+		reset_formspec(meta, code, errmsg, sel, mem_text)
+		return
+	end
+
+	if fields.refresh then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
+		local meta = minetest.get_meta(pos)
+		meta:set_int("luac_tab_sel", 2)
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem = load_memory(meta)
+		local mem_text = minetest.formspec_escape(dump(mem))
+		reset_formspec(meta, code, errmsg, 2, mem_text)
+		return
 	end
 end
 
