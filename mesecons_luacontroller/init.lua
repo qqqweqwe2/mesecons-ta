@@ -648,6 +648,23 @@ local function load_memory(meta)
 	return minetest.deserialize(meta:get_string("lc_memory"), true) or {}
 end
 
+local function load_errors(meta)
+	return minetest.deserialize(meta:get_string("luac_errors"), true) or {}
+end
+
+local function save_errors(meta, errs)
+	meta:set_string("luac_errors", minetest.serialize(errs))
+	meta:mark_as_private("luac_errors")
+end
+
+local function add_error(meta, errmsg, event_type)
+	local errs = load_errors(meta)
+	table.insert(errs, {time = os.time(), msg = tostring(errmsg), event_type = tostring(event_type or "")})
+	-- keep only last 10
+	while #errs > 10 do table.remove(errs, 1) end
+	save_errors(meta, errs)
+end
+
 
 local function serialize_memory(mem)
 	return minetest.serialize(remove_functions(mem))
@@ -757,18 +774,26 @@ local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
 	selected_tab = selected_tab or 1
 	mem_text = mem_text or ""
-	local tab_sel = tostring(selected_tab)
+	local tab_sel = tonumber(selected_tab) or 1
+	-- Determine whether we have errors to show
+	local errs = load_errors(meta)
+	local has_errors = (#errs > 0)
+	-- Build tabs string
+	local tabs = "Code,Memory"
+	if has_errors then tabs = tabs .. ",Errors" end
+	-- Clamp selection
+	if not has_errors and tab_sel > 2 then tab_sel = 1 end
 	local formspec = "size[12,10]"
 		.."style_type[label,textarea;font=mono]"
 		.."background[-0.2,-0.25;12.4,10.75;jeija_luac_background.png]"
 		.."hypertext[0.3,8.35;13,1;error;"..errmsg.."]"
-		.."tabheader[0,0;luac_tab;Code,Memory;"..tab_sel..";false;false]"
+		.."tabheader[0,0;luac_tab;"..tabs..";"..tostring(tab_sel)..";false;false]"
 
-	if selected_tab == 1 then
+	if tab_sel == 1 then
 		formspec = formspec
 			.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
 			.."image_button[4.75,9.25;2.5,0.8;jeija_luac_runbutton.png;program;]"
-	else
+	elseif tab_sel == 2 then
 		-- mem_text should already be escaped by caller
 		formspec = formspec
 			.."textarea[0.2,0.2;12.2,9.5;;;"..mem_text.."]"
@@ -783,22 +808,35 @@ local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
 			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;false]"
 			formspec = formspec .. "button[4.75,9.25;2.5,0.8;refresh;Refresh]"
 		end
-	end
+		elseif tab_sel == 3 and has_errors then
+			-- format errors into a readable multi-line string
+			local lines = {}
+			for i = #errs, 1, -1 do
+				local e = errs[i]
+				local ts = os.date("%Y-%m-%d %H:%M:%S", e.time)
+				local ev = e.event_type or ""
+				table.insert(lines, "["..ts.."] ("..ev..") "..(e.msg or ""))
+			end
+			local err_text = minetest.formspec_escape(table.concat(lines, "\n"))
+			formspec = formspec .. "textarea[0.2,0.2;12.2,9.0;;;"..err_text.."]"
+			formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
+			formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
+		end
 
-	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
-	meta:set_string("formspec", formspec)
-end
+		formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
+		meta:set_string("formspec", formspec)
+	end
 
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
-    if code and #code > 35000 then
-        code = code:sub(1, 35000)
-        minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 35,000 characters.")
-        minetest.after(1, function()
-            errmsg = "Code truncated to 35,000 characters. Please shorten your script."
+	if code and #code > 35000 then
+		code = code:sub(1, 35000)
+		minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 35,000 characters.")
+		minetest.after(1, function()
+			errmsg = "Code truncated to 35,000 characters. Please shorten your script."
 			reset_formspec(meta, code, errmsg, 1, "")
-        end)
-    end
+		end)
+	end
 	reset_formspec(meta, code, errmsg, 1, "")
 	meta:set_int("luac_id", math.random(1, 65535))
 end
@@ -809,15 +847,22 @@ local function run(pos, event)
 	local code = meta:get_string("code")
 	local ok, errmsg = run_inner(pos, code, event)
 	if not ok then
-		reset_meta(pos, code, errmsg)
+		-- record error in node meta (all errors)
+		local meta = minetest.get_meta(pos)
+		add_error(meta, errmsg, event and event.type)
+		-- Only perform a full reset (which overwrites stored code and the formspec)
+		-- when the run was triggered by an explicit program upload from a player.
+		if event and event.type == "program" then
+			reset_meta(pos, code, errmsg)
+		end
 	else
 		-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
 		local sel = meta:get_int("luac_tab_sel")
 		if sel == 0 then sel = 1 end
-		if sel ~= 2 then
-			-- default: show Code tab
+		if sel == 1 then
+			-- show Code tab
 			reset_formspec(meta, code, errmsg, 1, "")
-		else
+		elseif sel == 2 then
 			-- If Memory tab is selected, only refresh formspec when autorefresh is enabled.
 			local autoref = meta:get_int("luac_mem_autorefresh")
 			if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
@@ -828,6 +873,12 @@ local function run(pos, event)
 			else
 				-- autoref disabled: do not rebuild the formspec on external events
 			end
+		elseif sel == 3 then
+			-- If Errors tab is selected, do not rebuild the formspec on external events;
+			-- errors are recorded and the Errors tab will reflect them when the user opens it or refreshes.
+		else
+			-- Unknown selection: fallback to Code
+			reset_formspec(meta, code, errmsg, 1, "")
 		end
 	end
 	return ok, errmsg
@@ -975,6 +1026,38 @@ local function on_receive_fields(pos, _, fields, sender)
 		local mem = load_memory(meta)
 		local mem_text = minetest.formspec_escape(dump(mem))
 		reset_formspec(meta, code, errmsg, 2, mem_text)
+		return
+	end
+
+	if fields.refresh_errors then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
+		local meta = minetest.get_meta(pos)
+		meta:set_int("luac_tab_sel", 3)
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem_text = ""
+		reset_formspec(meta, code, errmsg, 3, mem_text)
+		return
+	end
+
+	-- Handle clearing errors list
+	if fields.clear_errors then
+		local meta = minetest.get_meta(pos)
+		save_errors(meta, {})
+		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
+		if sel == 3 then sel = 1 end
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem_text = ""
+		if sel == 2 then
+			local mem = load_memory(meta)
+			mem_text = minetest.formspec_escape(dump(mem))
+		end
+		reset_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
 end
