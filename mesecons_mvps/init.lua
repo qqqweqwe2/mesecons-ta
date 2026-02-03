@@ -216,10 +216,18 @@ function mesecon.mvps_push_or_pull(pos, stackdir, movedir, maximum, all_pull_sti
 
 	-- remove all nodes
 	for _, n in ipairs(nodes) do
-		n.meta = minetest.get_meta(n.pos):to_table()
+		local nmeta = minetest.get_meta(n.pos)
+
+		local ndef = minetest.registered_nodes[n.node.name]
+		if ndef and ndef._mesecons_before_move then
+			ndef._mesecons_before_move(n.pos, nmeta)
+		end
+
+		n.meta = nmeta:to_table()
+
 		local node_timer = minetest.get_node_timer(n.pos)
 		if node_timer:is_started() then
-			n.node_timer = {node_timer:get_timeout(), node_timer:get_elapsed()}
+			n.node_timer = { node_timer:get_timeout(), node_timer:get_elapsed() }
 		end
 		minetest.remove_node(n.pos)
 	end
@@ -241,10 +249,24 @@ function mesecon.mvps_push_or_pull(pos, stackdir, movedir, maximum, all_pull_sti
 			n.node.name = conductor.offstate or conductor.states[1]
 		end
 
-		minetest.set_node(np, n.node)
-		minetest.get_meta(np):from_table(n.meta)
-		if n.node_timer then
-			minetest.get_node_timer(np):set(unpack(n.node_timer))
+		local nmeta = minetest.get_meta(np)
+		local ndef = minetest.registered_nodes[n.node.name]
+		if ndef and ndef._mesecons_after_move then
+			-- The handler becomes responsible for restoring metadata and timer state.
+
+			minetest.swap_node(np, n.node)
+			nmeta:from_table({})
+
+			ndef._mesecons_after_move(np, nmeta, n)
+		else
+			-- Otherwise, retain old behavior.
+
+			minetest.set_node(np, n.node)
+			nmeta:from_table(n.meta)
+
+			if n.node_timer then
+				minetest.get_node_timer(np):set(unpack(n.node_timer))
+			end
 		end
 	end
 
