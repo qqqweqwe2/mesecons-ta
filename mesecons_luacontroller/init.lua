@@ -41,12 +41,14 @@ local rules = {
 
 -- Mod storage and library caches
 local storage = minetest.get_mod_storage()
+mesecon.library_storage = storage
 mesecon.library_cache = mesecon.library_cache or {}
 mesecon.library_call_count = mesecon.library_call_count or {}
 local DEFAULT_MAX_LIBRARY_CALLS = 7
 local function get_max_library_calls()
 	return tonumber(minetest.settings:get("mesecon_max_library_calls")) or DEFAULT_MAX_LIBRARY_CALLS
 end
+mesecon.get_max_library_calls = get_max_library_calls
 
 -- Helper: strip comments/strings and count load_library calls (static check)
 local function strip_comments_and_strings(code)
@@ -68,6 +70,46 @@ local function count_load_library_calls(code)
 		count = count + 1
 	end
 	return count
+end
+mesecon.count_load_library_calls = count_load_library_calls
+
+-- Factory: returns a load_library function bound to pos and env.
+-- Used by both mesecons_luacontroller and pipeworks lua_tube.
+function mesecon.make_load_library(pos, env)
+	return function(libname)
+		if type(libname) ~= "string" then return nil end
+
+		local pkey = minetest.hash_node_position(pos)
+		mesecon.library_call_count[pkey] = (mesecon.library_call_count[pkey] or 0) + 1
+		local max_calls = mesecon.get_max_library_calls()
+		if mesecon.library_call_count[pkey] > max_calls then
+			error("Too many load_library() runtime calls")
+		end
+
+		local func = mesecon.library_cache[libname]
+
+		if not func then
+			local pos_ser = mesecon.library_storage:get_string(libname)
+			if not pos_ser or pos_ser == "" then return nil end
+			local libpos = minetest.deserialize(pos_ser)
+			if not libpos then return nil end
+			local lmeta = minetest.get_meta(libpos)
+			if not lmeta then return nil end
+			local code = lmeta:get_string("code")
+			if not code or code == "" then return nil end
+
+			local msg
+			func, msg = loadstring(code)
+			if not func then return nil end
+
+			mesecon.library_cache[libname] = func
+		end
+
+		setfenv(func, env)
+		local ok, ret = pcall(func)
+		if not ok then error(ret, 0) end
+		return ret
+	end
 end
 
 local function remove_library_mapping(pos, meta)
@@ -689,40 +731,7 @@ local function create_environment(pos, mem, event, itbl, send_warning)
 			error("load_library is not allowed in library code")
 		end
 	else
-		env.load_library = function(libname)
-			if type(libname) ~= "string" then return nil end
-
-			-- runtime call counting (per-caller position)
-			local pkey = minetest.hash_node_position(pos)
-			mesecon.library_call_count[pkey] = (mesecon.library_call_count[pkey] or 0) + 1
-			local max_calls = get_max_library_calls()
-			if mesecon.library_call_count[pkey] > max_calls then error("Too many load_library() runtime calls") end
-
-			local func = mesecon.library_cache[libname]
-
-			if not func then
-				local pos_ser = storage:get_string(libname)
-				if not pos_ser or pos_ser == "" then return nil end
-				local libpos = minetest.deserialize(pos_ser)
-				if not libpos then return nil end
-				local lmeta = minetest.get_meta(libpos)
-				if not lmeta then return nil end
-				local code = lmeta:get_string("code")
-				if not code or code == "" then return nil end
-
-				local msg
-				func, msg = loadstring(code)
-				if not func then return nil end
-
-				mesecon.library_cache[libname] = func
-			end
-
-			setfenv(func, env)
-			local ok, ret = pcall(func)
-			if not ok then error(ret, 0) end
-			return ret
-		end
-
+		env.load_library = mesecon.make_load_library(pos, env)
 	end
 
 	return env
