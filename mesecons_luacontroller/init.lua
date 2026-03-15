@@ -39,6 +39,49 @@ local rules = {
 	d = {x =  0, y = 0, z = -1, name="D"},
 }
 
+-- Mod storage and library caches
+local storage = minetest.get_mod_storage()
+mesecon.library_cache = mesecon.library_cache or {}
+mesecon.library_call_count = mesecon.library_call_count or {}
+local DEFAULT_MAX_LIBRARY_CALLS = 7
+local function get_max_library_calls()
+	return tonumber(minetest.settings:get("mesecon_max_library_calls")) or DEFAULT_MAX_LIBRARY_CALLS
+end
+
+-- Helper: strip comments/strings and count load_library calls (static check)
+local function strip_comments_and_strings(code)
+	if not code then return "" end
+	-- remove long bracket comments/strings first
+	code = code:gsub("%-%-%[%[.-%]%]", "")   -- --[[ ... ]] comments
+	code = code:gsub("%[%[.-%]%]", "")       -- [[ ... ]] long strings
+	-- remove single-line comments
+	code = code:gsub("%-%-.-\n", "\n")
+	-- remove quoted strings
+	code = code:gsub("%b''", ""):gsub('%b""', "")
+	return code
+end
+
+local function count_load_library_calls(code)
+	local clean = strip_comments_and_strings(code)
+	local count = 0
+	for _ in clean:gmatch("%f[%w]load_library%s*%(") do
+		count = count + 1
+	end
+	return count
+end
+
+local function remove_library_mapping(pos, meta)
+	meta = meta or minetest.get_meta(pos)
+	local fullname = meta:get_string("library_fullname")
+	if fullname and fullname ~= "" then
+		storage:set_string(fullname, "")
+		mesecon.library_cache[fullname] = nil
+		meta:set_string("library_fullname", "")
+		meta:set_string("library_name", "")
+		meta:set_int("is_library", 0)
+	end
+end
+
 
 ------------------
 -- Action stuff --
@@ -359,7 +402,7 @@ else
 			-- NOTE: This runs within string metatable sandbox, so don't *rely* on anything of the form (""):y
 			-- Hence the values get moved out. Should take less time than original, so totally compatible
 			if type(time) ~= "number" then error("Delay must be a number") end
-            if tonumber(time) < 1 then error("Delay cannot be faster than 1 second") return end
+			if tonumber(time) < 1 then error("Delay cannot be faster than 1 second") end
             --minetest.log(tonumber(time))
 			table.insert(itbl, function ()
 				-- Outside string metatable sandbox, can safely run this now
@@ -503,6 +546,38 @@ local safe_globals = {
 	"tonumber", "tostring", "type", "unpack", "_VERSION"
 }
 
+local function timeout()
+	debug.sethook() -- Clear hook
+	error("Code timed out!", 2)
+end
+
+local function create_sandbox(code, env)
+	if code:byte(1) == 27 then
+		return nil, "Binary code prohibited."
+	end
+	local f, msg = loadstring(code)
+	if not f then return nil, msg end
+	setfenv(f, env)
+
+	-- Turn off JIT optimization for user code so that count
+	-- events are generated when adding debug hooks
+	if rawget(_G, "jit") then
+		jit.off(f, true)
+	end
+
+	local maxevents = mesecon.setting("luacontroller_maxevents", 10000)
+	return function(...)
+		-- NOTE: This runs within string metatable sandbox, so the setting's been moved out for safety
+		-- Use instruction counter to stop execution
+		-- after luacontroller_maxevents
+		debug.sethook(timeout, "", maxevents)
+		local ok, ret = pcall(f, ...)
+		debug.sethook() -- Clear hook
+		if not ok then error(ret, 0) end
+		return ret
+	end
+end
+
 local function create_environment(pos, mem, event, itbl, send_warning)
 	-- Gather variables for the environment
 	local node_def = minetest.registered_nodes[minetest.get_node(pos).name]
@@ -606,41 +681,51 @@ local function create_environment(pos, mem, event, itbl, send_warning)
 		env[name] = _G[name]
 	end
 
+	-- Export load_library into the environment
+	local meta = minetest.get_meta(pos)
+	local node_is_library = (meta and meta:get_int("is_library") == 1) and true or false
+	if node_is_library then
+		env.load_library = function()
+			error("load_library is not allowed in library code")
+		end
+	else
+		env.load_library = function(libname)
+			if type(libname) ~= "string" then return nil end
+
+			-- runtime call counting (per-caller position)
+			local pkey = minetest.hash_node_position(pos)
+			mesecon.library_call_count[pkey] = (mesecon.library_call_count[pkey] or 0) + 1
+			local max_calls = get_max_library_calls()
+			if mesecon.library_call_count[pkey] > max_calls then error("Too many load_library() runtime calls") end
+
+			local func = mesecon.library_cache[libname]
+
+			if not func then
+				local pos_ser = storage:get_string(libname)
+				if not pos_ser or pos_ser == "" then return nil end
+				local libpos = minetest.deserialize(pos_ser)
+				if not libpos then return nil end
+				local lmeta = minetest.get_meta(libpos)
+				if not lmeta then return nil end
+				local code = lmeta:get_string("code")
+				if not code or code == "" then return nil end
+
+				local msg
+				func, msg = loadstring(code)
+				if not func then return nil end
+
+				mesecon.library_cache[libname] = func
+			end
+
+			setfenv(func, env)
+			local ok, ret = pcall(func)
+			if not ok then error(ret, 0) end
+			return ret
+		end
+
+	end
+
 	return env
-end
-
-
-local function timeout()
-	debug.sethook() -- Clear hook
-	error("Code timed out!", 2)
-end
-
-
-local function create_sandbox(code, env)
-	if code:byte(1) == 27 then
-		return nil, "Binary code prohibited."
-	end
-	local f, msg = loadstring(code)
-	if not f then return nil, msg end
-	setfenv(f, env)
-
-	-- Turn off JIT optimization for user code so that count
-	-- events are generated when adding debug hooks
-	if rawget(_G, "jit") then
-		jit.off(f, true)
-	end
-
-	local maxevents = mesecon.setting("luacontroller_maxevents", 10000)
-	return function(...)
-		-- NOTE: This runs within string metatable sandbox, so the setting's been moved out for safety
-		-- Use instruction counter to stop execution
-		-- after luacontroller_maxevents
-		debug.sethook(timeout, "", maxevents)
-		local ok, ret = pcall(f, ...)
-		debug.sethook()  -- Clear hook
-		if not ok then error(ret, 0) end
-		return ret
-	end
 end
 
 
@@ -687,84 +772,95 @@ end
 -- Returns success (boolean), errmsg (string)
 -- run (as opposed to run_inner) is responsible for setting up meta according to this output
 local function run_inner(pos, code, event)
-	local meta = minetest.get_meta(pos)
-	-- Note: These return success, presumably to avoid changing LC ID.
-	if overheat(pos) then return true, "" end
-	if ignore_event(event, meta) then return true, "" end
+	local pkey = minetest.hash_node_position(pos)
+	-- initialize per-execution runtime counter
+	mesecon.library_call_count[pkey] = 0
 
-	-- Load mem from meta
-	local mem  = load_memory(meta)
+	local function _body()
+		local meta = minetest.get_meta(pos)
+		-- Note: These return success, presumably to avoid changing LC ID.
+		if overheat(pos) then return true, "" end
+		if ignore_event(event, meta) then return true, "" end
 
-	-- 'Last warning' label.
-	local warning = ""
-	local function send_warning(str)
-		warning = "Warning: " .. str
-	end
+		-- Load mem from meta
+		local mem  = load_memory(meta)
 
-	-- Create environment
-	local itbl = {}
-	local env = create_environment(pos, mem, event, itbl, send_warning)
-	if not env then return false, "Env does not exist. Controller has been moved?" end
+		-- 'Last warning' label.
+		local warning = ""
+		local function send_warning(str)
+			warning = "Warning: " .. str
+		end
 
-	local success, msg
-	-- Create the sandbox and execute code
-	local f
-	f, msg = create_sandbox(code, env)
-	if not f then return false, msg end
-	local mem_use_limit = collectgarbage("count") + mesecon.setting("luacontroller_volatile_mem_limit", 2000)
-	local oom_msg = "not enough memory" -- Used to detect OOM errors, kind of a hack.
-	-- Start string true sandboxing
-	local onetruestring = getmetatable("")
-	-- If a string sandbox is already up yet inconsistent, something is very wrong
-	assert(onetruestring.__index == string)
-	onetruestring.__index = env.string
-	success, msg = pcall(f)
-	onetruestring.__index = string
-	-- End string true sandboxing
-	if collectgarbage("count") > mem_use_limit then
-		-- Volatile memory limit exceeded.
-		success = false
-		msg = oom_msg
-	end
-	-- Serialize the persistent memory.
-	local memstring
-	if success then
-		success, memstring = pcall(serialize_memory, env.mem)
+		-- Create environment
+		local itbl = {}
+		local env = create_environment(pos, mem, event, itbl, send_warning)
+		if not env then return false, "Env does not exist. Controller has been reprogrammed or moved?" end
+
+		local success, msg
+		-- Create the sandbox and execute code
+		local f
+		f, msg = create_sandbox(code, env)
+		if not f then return false, msg end
+		local mem_use_limit = collectgarbage("count") + mesecon.setting("luacontroller_volatile_mem_limit", 2000)
+		local oom_msg = "not enough memory" -- Used to detect OOM errors, kind of a hack.
+		-- Start string true sandboxing
+		local onetruestring = getmetatable("")
+		-- If a string sandbox is already up yet inconsistent, something is very wrong
+		assert(onetruestring.__index == string)
+		onetruestring.__index = env.string
+		success, msg = pcall(f)
+		onetruestring.__index = string
+		-- End string true sandboxing
+		if collectgarbage("count") > mem_use_limit then
+			-- Volatile memory limit exceeded.
+			success = false
+			msg = oom_msg
+		end
+		-- Serialize the persistent memory.
+		local memstring
+		if success then
+			success, memstring = pcall(serialize_memory, env.mem)
+			if not success then
+				msg = memstring
+				-- Rethrow non-OOM errors.
+				if msg ~= oom_msg then error(msg, 0) end
+			end
+		end
 		if not success then
-			msg = memstring
-			-- Rethrow non-OOM errors.
-			if msg ~= oom_msg then error(msg, 0) end
+			-- Handle OOM errors by collecting garbage.
+			if msg == oom_msg then
+				env, itbl, mem = nil -- Let the memory be collected.
+				collectgarbage()
+				print("Error: Luacontroller at " .. minetest.pos_to_string(pos)
+						.. " exhausted its available volatile memory. Controller overheats.")
+				burn_controller(pos)
+			end
+			return false, msg
 		end
-	end
-	if not success then
-		-- Handle OOM errors by collecting garbage.
-		if msg == oom_msg then
-			env, itbl, mem = nil -- Let the memory be collected.
-			collectgarbage()
-			print("Error: Luacontroller at " .. minetest.pos_to_string(pos)
-					.. " exhausted its available volatile memory. Controller overheats.")
-			burn_controller(pos)
+		if type(env.port) ~= "table" then
+			return false, "Ports set are invalid."
 		end
-		return false, msg
-	end
-	if type(env.port) ~= "table" then
-		return false, "Ports set are invalid."
+
+		-- Actually set the ports
+		set_port_states(pos, env.port)
+
+		-- Save memory. This may burn the luacontroller if a memory overflow occurs.
+		save_serialized_memory(pos, meta, memstring)
+
+		-- Execute deferred tasks
+		for _, v in ipairs(itbl) do
+			local failure = v()
+			if failure then
+				return false, failure
+			end
+		end
+		return true, warning
 	end
 
-	-- Actually set the ports
-	set_port_states(pos, env.port)
-
-	-- Save memory. This may burn the luacontroller if a memory overflow occurs.
-	save_serialized_memory(pos, meta, memstring)
-
-	-- Execute deferred tasks
-	for _, v in ipairs(itbl) do
-		local failure = v()
-		if failure then
-			return false, failure
-		end
-	end
-	return true, warning
+	local ok, res1 = _body()
+	-- Clear runtime counter
+	mesecon.library_call_count[pkey] = nil
+	return ok, res1
 end
 
 local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
@@ -783,16 +879,29 @@ local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
 	if has_errors then tabs = tabs .. ",Errors" end
 	-- Clamp selection
 	if not has_errors and tab_sel > 2 then tab_sel = 1 end
-	local formspec = "size[12,10]"
+	local formspec = "size[12,11]"
 		.."style_type[label,textarea;font=mono]"
-		.."background[-0.2,-0.25;12.4,10.75;jeija_luac_background.png]"
-		.."hypertext[0.3,8.35;13,1;error;"..errmsg.."]"
+		.."background[-0.2,-0.25;12.4,11.75;jeija_luac_background.png]"
+		.."hypertext[0.3,8.35;13,0.6;error;"..errmsg.."]"
 		.."tabheader[0,0;luac_tab;"..tabs..";"..tostring(tab_sel)..";false;false]"
 
 	if tab_sel == 1 then
-		formspec = formspec
-			.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
-			.."image_button[4.75,9.25;2.5,0.8;jeija_luac_runbutton.png;program;]"
+		local is_lib = meta:get_int("is_library")
+		local lib_name = minetest.formspec_escape(meta:get_string("library_name") or "")
+		local full_name = minetest.formspec_escape(meta:get_string("library_fullname") or "")
+		if is_lib == 1 then
+			formspec = formspec
+				.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+				.."checkbox[0.2,9.75;is_library;Library;true]"
+				.."field[2.0,10.0;4.5,0.8;library_name;Library name;"..lib_name.."]"
+				.."image_button[8.75,9.9;1.5,0.8;jeija_luac_savebutton.png;save_library;]"
+				.."textarea[0.5,10.5;11.6,0.75;;Full library name: "..full_name..";]"
+		else
+			formspec = formspec
+				.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+				.."checkbox[0.2,9.75;is_library;Library;false]"
+				.."image_button[8.75,9.9;2.5,0.8;jeija_luac_runbutton.png;program;]"
+		end
 	elseif tab_sel == 2 then
 		-- mem_text should already be escaped by caller
 		formspec = formspec
@@ -841,9 +950,24 @@ local function reset_meta(pos, code, errmsg)
 	meta:set_int("luac_id", math.random(1, 65535))
 end
 
+-- Initialize library-related fields for a new luacontroller
+local function on_construct(pos)
+	local meta = minetest.get_meta(pos)
+	meta:set_int("is_library", 0)
+	meta:set_string("library_fullname", "")
+	meta:set_string("library_name", "")
+	meta:set_int("luac_tab_sel", 1)  -- Default to Code tab
+	meta:set_int("luac_mem_autorefresh", 1)  -- Auto-refresh enabled by default
+	reset_meta(pos, "", "")
+end
+
 -- Wraps run_inner with LC-reset-on-error
 local function run(pos, event)
 	local meta = minetest.get_meta(pos)
+	-- Library controllers don't process events - they're just code storage
+	if meta:get_int("is_library") == 1 then
+		return true, ""
+	end
 	local code = meta:get_string("code")
 	local ok, errmsg = run_inner(pos, code, event)
 	if not ok then
@@ -965,16 +1089,114 @@ end
 
 local function on_receive_fields(pos, _, fields, sender)
 	-- Handle programming, tab switching and memory refresh
-	if fields.program then
+	if fields.program or fields.save_library then
 		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
 			return
 		end
-		local ok, err = set_program(pos, fields.code)
-		if not ok then
-			minetest.log("action", "Lua controller programming error: " .. tostring(err))
+		local meta = minetest.get_meta(pos)
+		local code = fields.code or ""
+		-- Determine mode by which button was pressed: save_library => library save, program => normal save
+		local is_library = (fields.save_library ~= nil)
+		local library_name = fields.library_name or meta:get_string("library_name")
+
+		-- Static check: count load_library calls
+		local calls = count_load_library_calls(code)
+		local limit = is_library and 0 or get_max_library_calls()
+		if calls > limit then
+			local errmsg = "Too many load_library() calls ("..calls.."). Limit is "..limit.."."
+			reset_formspec(meta, code, errmsg, 1, "")
+			return
 		end
+
+		-- If saving as library, validate name
+		if is_library then
+			if not library_name or library_name == "" then
+				reset_formspec(meta, code, "Library name cannot be empty!", 1, "")
+				return
+			end
+			if #library_name > 256 then
+				reset_formspec(meta, code, "Library name too long (max 256).", 1, "")
+				return
+			end
+			if not library_name:match("^[A-Za-z0-9,%.%-%_=+@#%%*]+$") then
+				reset_formspec(meta, code, "Library name contains invalid characters.", 1, "")
+				return
+			end
+		end
+
+		if is_library then
+			-- For library mode: just save code and metadata, don't execute
+			local curpos_ser = minetest.serialize(pos)
+			local old_fullname = meta:get_string("library_fullname")
+			local fullname = name .. ":" .. library_name
+			
+			if old_fullname ~= fullname then
+				-- check duplicate FIRST: get_string returns "" for deleted/non-existent keys
+				local other = storage:get_string(fullname)
+				if other ~= "" and other ~= curpos_ser then
+					-- duplicate: key exists with different position
+					reset_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
+					return
+				end
+				
+				-- remove old mapping AFTER duplicate check (if name changed)
+				if old_fullname and old_fullname ~= "" then
+					storage:set_string(old_fullname, "")
+					mesecon.library_cache[old_fullname] = nil
+				end
+				
+				storage:set_string(fullname, curpos_ser)
+			end
+			
+			-- Save code and library metadata (no execution)
+			meta:set_string("code", code)
+			meta:mark_as_private("code")
+			meta:set_string("library_fullname", fullname)
+			meta:set_string("library_name", library_name)
+			meta:set_int("is_library", 1)
+			meta:set_int("luac_id", math.random(1, 65535))
+			
+			-- Check syntax without executing
+			if code:byte(1) == 27 then
+				reset_formspec(meta, code, "Binary code prohibited.", 1, "")
+				return
+			end
+			local f, msg = loadstring(code)
+			if not f then
+				-- Syntax error - show it
+				reset_formspec(meta, code, msg or "Syntax error", 1, "")
+				return
+			end
+			
+			-- Clear cache to force reload on next use
+			mesecon.library_cache[fullname] = nil
+			-- Show success message
+			reset_formspec(meta, code, "Library saved successfully!", 1, "")
+		else
+			-- Normal mode: execute program
+			-- Pre-update meta fields so reset_formspec sees correct values
+			local curpos_ser = minetest.serialize(pos)
+			local old_fullname = meta:get_string("library_fullname")
+			
+			-- switching to normal controller: remove old mapping if exists
+			if old_fullname and old_fullname ~= "" then
+				storage:set_string(old_fullname, "")
+				mesecon.library_cache[old_fullname] = nil
+			end
+			meta:set_string("library_fullname", "")
+			meta:set_string("library_name", "")
+			meta:set_int("is_library", 0)
+
+			-- Attempt to set program (this will call reset_meta and run)
+			local ok, err = set_program(pos, code)
+			if not ok then
+				minetest.log("action", "Lua controller programming error: " .. tostring(err))
+				return
+			end
+		end
+
 		return
 	end
 
@@ -1002,6 +1224,24 @@ local function on_receive_fields(pos, _, fields, sender)
 		local enabled = (fields.mem_autoref == "true") and 1 or 0
 		meta:set_int("luac_mem_autorefresh", enabled)
 		-- Rebuild formspec to reflect new checkbox/button state
+		local code = meta:get_string("code")
+		local errmsg = ""
+		local mem_text = ""
+		if sel == 2 then
+			local mem = load_memory(meta)
+			mem_text = minetest.formspec_escape(dump(mem))
+		end
+		reset_formspec(meta, code, errmsg, sel, mem_text)
+		return
+	end
+
+	-- Handle Library checkbox toggle (show/hide library_name field)
+	if fields.is_library ~= nil then
+		local meta = minetest.get_meta(pos)
+		local enabled = (fields.is_library == "true") and 1 or 0
+		meta:set_int("is_library", enabled)
+		-- Rebuild formspec to show/hide library_name and change button
+		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
 		local code = meta:get_string("code")
 		local errmsg = ""
 		local mem_text = ""
@@ -1155,6 +1395,10 @@ for d = 0, 1 do
 			c = c == 1,
 			d = d == 1,
 		},
+		on_destruct = function(pos)
+			-- Called BEFORE node/meta removal - library mapping still accessible
+			remove_library_mapping(pos)
+		end,
 		after_dig_node = function (pos)
 			mesecon.do_cooldown(pos)
 			mesecon.receptor_off(pos, output_rules)
@@ -1203,7 +1447,7 @@ minetest.register_node(BASENAME .. "_burnt", {
 	sunlight_propagates = true,
 	selection_box = selection_box,
 	node_box = node_box,
-	on_construct = reset_meta,
+	on_construct = on_construct,
 	on_receive_fields = on_receive_fields,
 	sounds = mesecon.node_sound.stone,
 	virtual_portstates = {a = false, b = false, c = false, d = false},
@@ -1216,6 +1460,13 @@ minetest.register_node(BASENAME .. "_burnt", {
 		},
 	},
 	on_blast = mesecon.on_blastnode,
+	on_destruct = function(pos)
+		-- Called BEFORE node/meta removal - library mapping still accessible
+		remove_library_mapping(pos)
+	end,
+	after_dig_node = function(pos)
+		-- No additional cleanup needed, on_destruct handles library removal
+	end,
 })
 
 ------------------------
