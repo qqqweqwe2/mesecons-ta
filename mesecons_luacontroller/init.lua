@@ -44,6 +44,30 @@ local storage = minetest.get_mod_storage()
 mesecon.library_storage = storage
 mesecon.library_cache = mesecon.library_cache or {}
 mesecon.library_call_count = mesecon.library_call_count or {}
+
+local LIB_FORMAT_VERSION = storage:get_string("lib_format_version") or "legacy"
+
+if LIB_FORMAT_VERSION == "legacy" then
+	minetest.log("action", "[mesecons_luacontroller] Migrating library positions to vector.to_string format...")
+
+	local migrated = 0
+	local fields = storage:to_table().fields
+	for key, _ in pairs(fields) do
+		if key ~= "lib_format_version" and key:match(":") then
+			local old_val = storage:get_string(key)
+			if old_val and old_val ~= "" and old_val:sub(1, 1) == "{" then
+				local pos = minetest.deserialize(old_val)
+				if pos and pos.x then
+					storage:set_string(key, vector.to_string(pos))
+					migrated = migrated + 1
+				end
+			end
+		end
+	end
+
+	storage:set_string("lib_format_version", "v1")
+	minetest.log("action", "[mesecons_luacontroller] Migrated " .. migrated .. " library positions")
+end
 local DEFAULT_MAX_LIBRARY_CALLS = 7
 local function get_max_library_calls()
 	return tonumber(minetest.settings:get("mesecon_max_library_calls")) or DEFAULT_MAX_LIBRARY_CALLS
@@ -89,9 +113,9 @@ function mesecon.make_load_library(pos, env)
 		local func = mesecon.library_cache[libname]
 
 		if not func then
-			local pos_ser = mesecon.library_storage:get_string(libname)
-			if not pos_ser or pos_ser == "" then return nil end
-			local libpos = minetest.deserialize(pos_ser)
+			local pos_str = mesecon.library_storage:get_string(libname)
+			if not pos_str or pos_str == "" then return nil end
+			local libpos = vector.from_string(pos_str)
 			if not libpos then return nil end
 			local lmeta = minetest.get_meta(libpos)
 			if not lmeta then return nil end
@@ -1136,27 +1160,23 @@ local function on_receive_fields(pos, _, fields, sender)
 		end
 
 		if is_library then
-			-- For library mode: just save code and metadata, don't execute
-			local curpos_ser = minetest.serialize(pos)
+			local curpos_str = vector.to_string(pos)
 			local old_fullname = meta:get_string("library_fullname")
 			local fullname = name .. ":" .. library_name
-			
+
 			if old_fullname ~= fullname then
-				-- check duplicate FIRST: get_string returns "" for deleted/non-existent keys
 				local other = storage:get_string(fullname)
-				if other ~= "" and other ~= curpos_ser then
-					-- duplicate: key exists with different position
+				if other ~= "" and other ~= curpos_str then
 					reset_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
 					return
 				end
-				
-				-- remove old mapping AFTER duplicate check (if name changed)
+
 				if old_fullname and old_fullname ~= "" then
 					storage:set_string(old_fullname, "")
 					mesecon.library_cache[old_fullname] = nil
 				end
-				
-				storage:set_string(fullname, curpos_ser)
+
+				storage:set_string(fullname, curpos_str)
 			end
 			
 			-- Save code and library metadata (no execution)
@@ -1184,9 +1204,6 @@ local function on_receive_fields(pos, _, fields, sender)
 			-- Show success message
 			reset_formspec(meta, code, "Library saved successfully!", 1, "")
 		else
-			-- Normal mode: execute program
-			-- Pre-update meta fields so reset_formspec sees correct values
-			local curpos_ser = minetest.serialize(pos)
 			local old_fullname = meta:get_string("library_fullname")
 			
 			-- switching to normal controller: remove old mapping if exists
