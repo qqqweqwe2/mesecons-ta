@@ -188,6 +188,29 @@ local function update_real_port_states(pos, rule_name, new_state)
 	return false
 end
 
+--------------------------------------------------
+-- Signal Rate Limiting
+--------------------------------------------------
+
+local SIGNAL_RATE_LIMIT = mesecon.setting("signal_rate_limit_cooldown", 0.5)
+
+local function should_process_signal(pos, new_state)
+	if new_state ~= "on" and new_state ~= "off" then
+		return true
+	end
+
+	local meta = minetest.get_meta(pos)
+	local now = os.time()
+	local last_time = meta:get_int("signal_rate_limit") or 0
+
+	if now - last_time < SIGNAL_RATE_LIMIT then
+		return false
+	end
+
+	meta:set_int("signal_rate_limit", now)
+	return true
+end
+
 
 local port_names = {"a", "b", "c", "d"}
 
@@ -1378,9 +1401,13 @@ for d = 0, 1 do
 		effector = {
 			rules = input_rules[cid],
 			action_change = function (pos, _, rule_name, new_state)
-				if update_real_port_states(pos, rule_name, new_state) then
-					run(pos, {type=new_state, pin=rule_name})
+				if not update_real_port_states(pos, rule_name, new_state) then
+					return
 				end
+				if not should_process_signal(pos, new_state) then
+					return
+				end
+				run(pos, {type=new_state, pin=rule_name})
 			end,
 		},
 		receptor = {
