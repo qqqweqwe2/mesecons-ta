@@ -1263,6 +1263,11 @@ local function on_receive_fields(pos, _, fields, sender)
 
 	-- Handle Library checkbox toggle (show/hide library_name field)
 	if fields.is_library ~= nil then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
 		local meta = minetest.get_meta(pos)
 		local enabled = (fields.is_library == "true") and 1 or 0
 		meta:set_int("is_library", enabled)
