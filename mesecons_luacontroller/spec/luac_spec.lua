@@ -23,6 +23,19 @@ describe("LuaController", function()
 		assert.is_false(ok)
 	end)
 
+	it("initializes metadata on construction", function()
+		local node_def = minetest.registered_nodes["mesecons_luacontroller:luacontroller0000"]
+		node_def.on_construct(pos, "unexpected future argument")
+
+		local meta = minetest.get_meta(pos)
+		assert.equal("", meta:get_string("code"))
+		assert.equal(0, meta:get_int("is_library"))
+		assert.equal("", meta:get_string("library_fullname"))
+		assert.equal("", meta:get_string("library_name"))
+		assert.equal(1, meta:get_int("luac_tab_sel"))
+		assert.equal(1, meta:get_int("luac_mem_autorefresh"))
+	end)
+
 	it("I/O", function()
 		mesecon._test_place(pos_a, "mesecons:test_receptor_on")
 		mineunit:execute_globalstep() -- Execute receptor_on action

@@ -920,6 +920,7 @@ local function run_inner(pos, code, event)
 end
 
 local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
+	code = code or ""
 	meta:set_string("code", code)
 	meta:mark_as_private("code")
 	code = minetest.formspec_escape(code)
@@ -1137,10 +1138,6 @@ local function set_program(pos, code)
 	reset(pos)
 	reset_meta(pos, code)
 	return run(pos, {type="program"})
-end
-
-local function on_construct(pos)
-	reset_meta(pos)
 end
 
 local function on_receive_fields(pos, _, fields, sender)
