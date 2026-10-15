@@ -1013,6 +1013,8 @@ end
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
 	local err = update_code(meta, code)
+	-- Code could not be saved correctly, display what is actually in the controller
+	if err ~= nil then code = meta:get_string("code") end
 	update_formspec(meta, code, err or errmsg, 1, "")
 	meta:set_int("luac_id", math.random(1, 65535))
 	return err
@@ -1235,7 +1237,7 @@ local function on_receive_fields(pos, _, fields, sender)
 
 			-- Error occured when saving code - show it
 			if err ~= nil then
-				update_formspec(meta, code, err, 1, "")
+				update_formspec(meta, meta:get_string("code"), err, 1, "")
 				return
 			end
 			
