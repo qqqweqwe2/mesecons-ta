@@ -14,7 +14,8 @@
 -- set_port(pos, rule, state): activates/deactivates the mesecons according to the port states
 -- set_port_states(pos, ports, ignore_overheat): Applies new port states to a Luacontroller at pos
 -- run_inner(pos, code, event): runs code on the controller at pos and event
--- reset_formspec(pos, code, errmsg): installs new code and prints error messages, without resetting LCID
+-- update_code(pos, code): installs new code, without resetting LCID
+-- update_formspec(pos, code, errmsg, selected_tab, mem_text): updates the formspec and prints error messages
 -- reset_meta(pos, code, errmsg): performs a software-reset, installs new code and prints error message
 -- run(pos, event): a wrapper for run_inner which gets code & handles errors via reset_meta
 -- reset(pos): performs a hardware reset, turns off all ports
@@ -919,13 +920,25 @@ local function run_inner(pos, code, event)
 	return ok, res1
 end
 
-local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
+local function update_code(meta, code)
 	code = code or ""
+	local err = nil
+    -- Limit code to 35000 characters on a normal controller or to 512 KiB on a library one
+	local limit = 35000
+	if meta:get_int("is_library") == 1 then limit = 524288 end
+	if #code > limit then
+		code = code:sub(1, limit)
+		minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to "..tostring(limit).." characters.")
+		err =  "Code truncated to "..tostring(limit).." characters. Please shorten your script."
+	end
 	meta:set_string("code", code)
 	meta:mark_as_private("code")
-	code = minetest.formspec_escape(code)
+	return err
+end
+
+local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
+	code = minetest.formspec_escape(code or "")
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
-	selected_tab = selected_tab or 1
 	mem_text = mem_text or ""
 	local tab_sel = tonumber(selected_tab) or 1
 	-- Determine whether we have errors to show
@@ -974,37 +987,30 @@ local function reset_formspec(meta, code, errmsg, selected_tab, mem_text)
 			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;false]"
 			formspec = formspec .. "button[4.75,9.25;2.5,0.8;refresh;Refresh]"
 		end
-		elseif tab_sel == 3 and has_errors then
-			-- format errors into a readable multi-line string
-			local lines = {}
-			for i = #errs, 1, -1 do
-				local e = errs[i]
-				local ts = os.date("%Y-%m-%d %H:%M:%S", e.time)
-				local ev = e.event_type or ""
-				table.insert(lines, "["..ts.."] ("..ev..") "..(e.msg or ""))
-			end
-			local err_text = minetest.formspec_escape(table.concat(lines, "\n"))
-			formspec = formspec .. "textarea[0.2,0.2;12.2,9.0;;;"..err_text.."]"
-			formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
-			formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
+	elseif tab_sel == 3 and has_errors then
+		-- format errors into a readable multi-line string
+		local lines = {}
+		for i = #errs, 1, -1 do
+			local e = errs[i]
+			local ts = os.date("%Y-%m-%d %H:%M:%S", e.time)
+			local ev = e.event_type or ""
+			table.insert(lines, "["..ts.."] ("..ev..") "..(e.msg or ""))
 		end
-
-		formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
-		meta:set_string("formspec", formspec)
+		local err_text = minetest.formspec_escape(table.concat(lines, "\n"))
+		formspec = formspec .. "textarea[0.2,0.2;12.2,9.0;;;"..err_text.."]"
+		formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
+		formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
 	end
+	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
+	meta:set_string("formspec", formspec)
+end
 
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
-	if code and #code > 35000 then
-		code = code:sub(1, 35000)
-		minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to 35,000 characters.")
-		minetest.after(1, function()
-			errmsg = "Code truncated to 35,000 characters. Please shorten your script."
-			reset_formspec(meta, code, errmsg, 1, "")
-		end)
-	end
-	reset_formspec(meta, code, errmsg, 1, "")
+	local err = update_code(meta, code)
+	update_formspec(meta, code, err or errmsg, 1, "")
 	meta:set_int("luac_id", math.random(1, 65535))
+	return err
 end
 
 -- Initialize library-related fields for a new luacontroller
@@ -1027,6 +1033,9 @@ local function run(pos, event)
 	end
 	local code = meta:get_string("code")
 	local ok, errmsg = run_inner(pos, code, event)
+	-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
+	local sel = meta:get_int("luac_tab_sel")
+	if sel == 0 then sel = 1 end
 	if not ok then
 		-- record error in node meta (all errors)
 		local meta = minetest.get_meta(pos)
@@ -1035,22 +1044,28 @@ local function run(pos, event)
 		-- when the run was triggered by an explicit program upload from a player.
 		if event and event.type == "program" then
 			reset_meta(pos, code, errmsg)
+		else -- Otherwise refresh the formspec to display the error
+			if sel == 1 then
+				update_formspec(meta, code, errmsg, 1, "")
+			elseif sel == 2 then
+				local mem = load_memory(meta)
+				local mem_text = minetest.formspec_escape(dump(mem))
+				update_formspec(meta, "", errmsg, 2, mem_text)
+			else
+				update_formspec(meta, "", errmsg, sel, "")
+			end
 		end
 	else
-		-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
-		local sel = meta:get_int("luac_tab_sel")
-		if sel == 0 then sel = 1 end
 		if sel == 1 then
-			-- show Code tab
-			reset_formspec(meta, code, errmsg, 1, "")
+			-- Code tab selected
+			-- there is absolutely no need to refresh the formspec as nothing will visibly change
 		elseif sel == 2 then
 			-- If Memory tab is selected, only refresh formspec when autorefresh is enabled.
 			local autoref = meta:get_int("luac_mem_autorefresh")
-			if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
 			if autoref == 1 then
 				local mem = load_memory(meta)
 				local mem_text = minetest.formspec_escape(dump(mem))
-				reset_formspec(meta, code, errmsg, 2, mem_text)
+				update_formspec(meta, "", errmsg, 2, mem_text)
 			else
 				-- autoref disabled: do not rebuild the formspec on external events
 			end
@@ -1058,8 +1073,7 @@ local function run(pos, event)
 			-- If Errors tab is selected, do not rebuild the formspec on external events;
 			-- errors are recorded and the Errors tab will reflect them when the user opens it or refreshes.
 		else
-			-- Unknown selection: fallback to Code
-			reset_formspec(meta, code, errmsg, 1, "")
+			-- Unknown selection: do not update anything
 		end
 	end
 	return ok, errmsg
@@ -1136,7 +1150,9 @@ end
 
 local function set_program(pos, code)
 	reset(pos)
-	reset_meta(pos, code)
+	local err = reset_meta(pos, code)
+	-- Do not run the code if reset was not sucessful
+	if err ~= nil then return false, err end
 	return run(pos, {type="program"})
 end
 
@@ -1159,22 +1175,27 @@ local function on_receive_fields(pos, _, fields, sender)
 		local limit = is_library and 0 or get_max_library_calls()
 		if calls > limit then
 			local errmsg = "Too many load_library() calls ("..calls.."). Limit is "..limit.."."
-			reset_formspec(meta, code, errmsg, 1, "")
+			update_code(meta, "")
+			update_formspec(meta, code, errmsg, 1, "")
 			return
 		end
 
 		-- If saving as library, validate name
 		if is_library then
 			if not library_name or library_name == "" then
-				reset_formspec(meta, code, "Library name cannot be empty!", 1, "")
+				-- Clear the code from "code" metadata but not formspec so user does not lose it
+				update_code(meta, "")
+				update_formspec(meta, code, "Library name cannot be empty!", 1, "")
 				return
 			end
 			if #library_name > 256 then
-				reset_formspec(meta, code, "Library name too long (max 256).", 1, "")
+				update_code(meta, "")
+				update_formspec(meta, code, "Library name too long (max 256).", 1, "")
 				return
 			end
 			if not library_name:match("^[A-Za-z0-9,%.%-%_=+@#%%*]+$") then
-				reset_formspec(meta, code, "Library name contains invalid characters.", 1, "")
+				update_code(meta, "")
+				update_formspec(meta, code, "Library name contains invalid characters.", 1, "")
 				return
 			end
 		end
@@ -1187,7 +1208,8 @@ local function on_receive_fields(pos, _, fields, sender)
 			if old_fullname ~= fullname then
 				local other = storage:get_string(fullname)
 				if other ~= "" and other ~= curpos_str then
-					reset_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
+					update_code(meta, "")
+					update_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
 					return
 				end
 
@@ -1200,29 +1222,34 @@ local function on_receive_fields(pos, _, fields, sender)
 			end
 			
 			-- Save code and library metadata (no execution)
-			meta:set_string("code", code)
-			meta:mark_as_private("code")
+			local err = update_code(meta, code)
 			meta:set_string("library_fullname", fullname)
 			meta:set_string("library_name", library_name)
 			meta:set_int("is_library", 1)
 			meta:set_int("luac_id", math.random(1, 65535))
+
+			-- Error occured when saving code - show it
+			if err ~= nil then
+				update_formspec(meta, code, err, 1, "")
+				return
+			end
 			
 			-- Check syntax without executing
 			if code:byte(1) == 27 then
-				reset_formspec(meta, code, "Binary code prohibited.", 1, "")
+				update_formspec(meta, code, "Binary code prohibited.", 1, "")
 				return
 			end
 			local f, msg = loadstring(code)
 			if not f then
 				-- Syntax error - show it
-				reset_formspec(meta, code, msg or "Syntax error", 1, "")
+				update_formspec(meta, code, msg or "Syntax error", 1, "")
 				return
 			end
 			
 			-- Clear cache to force reload on next use
 			mesecon.library_cache[fullname] = nil
 			-- Show success message
-			reset_formspec(meta, code, "Library saved successfully!", 1, "")
+			update_formspec(meta, code, "Library saved successfully!", 1, "")
 		else
 			local old_fullname = meta:get_string("library_fullname")
 			
@@ -1250,34 +1277,42 @@ local function on_receive_fields(pos, _, fields, sender)
 		local sel = tonumber(fields.luac_tab) or 1
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", sel)
-		-- Ensure autorefresh is enabled when switching back to Code
-		if sel == 1 then meta:set_int("luac_mem_autorefresh", 1) end
-		local code = meta:get_string("code")
+		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		if sel == 2 then
+		if sel == 1 then
+			code = meta:get_string("code")
+		elseif sel == 2 then
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		reset_formspec(meta, code, errmsg, sel, mem_text)
+		update_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
 
 	-- Handle autorefresh checkbox toggle
 	if fields.mem_autoref ~= nil then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
 		local meta = minetest.get_meta(pos)
-		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
+		local sel = meta:get_int("luac_tab_sel")
+		if sel == 0 then sel = 2 end
 		local enabled = (fields.mem_autoref == "true") and 1 or 0
 		meta:set_int("luac_mem_autorefresh", enabled)
 		-- Rebuild formspec to reflect new checkbox/button state
-		local code = meta:get_string("code")
+		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		if sel == 2 then
+		if sel == 1 then
+			code = meta:get_string("code")
+		elseif sel == 2 then
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		reset_formspec(meta, code, errmsg, sel, mem_text)
+		update_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
 
@@ -1292,15 +1327,18 @@ local function on_receive_fields(pos, _, fields, sender)
 		local enabled = (fields.is_library == "true") and 1 or 0
 		meta:set_int("is_library", enabled)
 		-- Rebuild formspec to show/hide library_name and change button
-		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
-		local code = meta:get_string("code")
+		local sel = meta:get_int("luac_tab_sel")
+		if sel == 0 then sel = 1 end
+		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		if sel == 2 then
+		if sel == 1 then
+			code = meta:get_string("code")
+		elseif sel == 2 then
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		reset_formspec(meta, code, errmsg, sel, mem_text)
+		update_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
 
@@ -1312,11 +1350,11 @@ local function on_receive_fields(pos, _, fields, sender)
 		end
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", 2)
-		local code = meta:get_string("code")
+		local code = ""
 		local errmsg = ""
 		local mem = load_memory(meta)
 		local mem_text = minetest.formspec_escape(dump(mem))
-		reset_formspec(meta, code, errmsg, 2, mem_text)
+		update_formspec(meta, code, errmsg, 2, mem_text)
 		return
 	end
 
@@ -1328,27 +1366,34 @@ local function on_receive_fields(pos, _, fields, sender)
 		end
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", 3)
-		local code = meta:get_string("code")
+		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		reset_formspec(meta, code, errmsg, 3, mem_text)
+		update_formspec(meta, code, errmsg, 3, mem_text)
 		return
 	end
 
 	-- Handle clearing errors list
 	if fields.clear_errors then
+		local name = sender and sender:get_player_name() or ""
+		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
+			minetest.record_protection_violation(pos, name)
+			return
+		end
 		local meta = minetest.get_meta(pos)
 		save_errors(meta, {})
-		local sel = tonumber(meta:get_int("luac_tab_sel")) or 1
-		if sel == 3 then sel = 1 end
-		local code = meta:get_string("code")
+		local sel = meta:get_int("luac_tab_sel")
+		if (sel == 3 or sel == 0) then sel = 1 end
+		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		if sel == 2 then
+		if sel == 1 then
+			code = meta:get_string("code")
+		elseif sel == 2 then
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		reset_formspec(meta, code, errmsg, sel, mem_text)
+		update_formspec(meta, code, errmsg, sel, mem_text)
 		return
 	end
 end
@@ -1466,19 +1511,6 @@ end
 end
 end
 end
-
-core.register_lbm({
-	name = "mesecons_luacontroller:formspec_update_1",
-	label = "'formspec' field update",
-	run_at_every_load = false,
-	nodenames = controller_nodenames,
-	action = function(pos, _)
-		local meta = core.get_meta(pos)
-		local code = meta:get_string("code")
-		local errmsg = "" -- cannot recover trivially
-		reset_formspec(meta, code, errmsg)
-	end
-})
 
 ------------------------------
 -- Overheated Luacontroller --
