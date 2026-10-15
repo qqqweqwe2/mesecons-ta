@@ -923,9 +923,14 @@ end
 local function update_code(meta, code)
 	code = code or ""
 	local err = nil
-    -- Limit code to 35000 characters on a normal controller or to 512 KiB on a library one
-	local limit = 35000
-	if meta:get_int("is_library") == 1 then limit = 524288 end
+	-- Limit code length to values set by mesecon.luacontroller_code_maxlen
+	-- and mesecon.luacontroller_library_maxlen settings in minetest.conf or defaults
+	local limit
+	if meta:get_int("is_library") == 1 then
+		limit = mesecon.setting("luacontroller_library_maxlen", 524288) -- 512 KiB
+	else
+		limit = mesecon.setting("luacontroller_code_maxlen", 35000)
+	end
 	if #code > limit then
 		code = code:sub(1, limit)
 		minetest.log("warning", "Luacontroller at "..dump(pos).." truncated to "..tostring(limit).." characters.")
