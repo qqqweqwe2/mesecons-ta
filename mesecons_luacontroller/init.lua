@@ -14,8 +14,9 @@
 -- set_port(pos, rule, state): activates/deactivates the mesecons according to the port states
 -- set_port_states(pos, ports, ignore_overheat): Applies new port states to a Luacontroller at pos
 -- run_inner(pos, code, event): runs code on the controller at pos and event
--- update_code(pos, code): installs new code, without resetting LCID
--- update_formspec(pos, code, errmsg, selected_tab, mem_text): updates the formspec and prints error messages
+-- update_code(meta, code): installs new code, without resetting LCID
+-- update_errmsg(meta, errmsg): installs new code, without resetting LCID
+-- update_formspec(pos, refresh, code_override): displays updated formspec to players who have the UI open
 -- reset_meta(pos, code, errmsg): performs a software-reset, installs new code and prints error message
 -- run(pos, event): a wrapper for run_inner which gets code & handles errors via reset_meta
 -- reset(pos): performs a hardware reset, turns off all ports
@@ -48,6 +49,8 @@ mesecon.library_call_count = mesecon.library_call_count or {}
 -- Track which players have luacontroller UI currently open, with two-way lookup
 mesecon.opened_luacontrollers = mesecon.opened_luacontrollers or {}
 mesecon.opened_luacontrollers_players = mesecon.opened_luacontrollers_players or {}
+mesecon.luacontroller_formspec_cache = mesecon.luacontroller_formspec_cache or {}
+mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size or 0
 
 local LIB_FORMAT_VERSION = storage:get_string("lib_format_version") or "legacy"
 
@@ -923,6 +926,12 @@ local function run_inner(pos, code, event)
 	return ok, res1
 end
 
+local function update_errmsg(meta, errmsg)
+	errmsg = errmsg or ""
+	meta:set_string("luac_errmsg", errmsg)
+	meta:mark_as_private("luac_errmsg")
+end
+
 local function update_code(meta, code)
 	code = code or ""
 	local err = nil
@@ -946,7 +955,7 @@ end
 
 local function formspec_opened_unchecked(name, pos_str)
 	mesecon.opened_luacontrollers_players[name] = pos_str
-	if not mesecon.opened_luacontrollers[pos_str] then
+	if mesecon.opened_luacontrollers[pos_str] == nil then
 		mesecon.opened_luacontrollers[pos_str] = {}
 	end
 	mesecon.opened_luacontrollers[pos_str][name] = true
@@ -954,21 +963,21 @@ end
 
 local function formspec_closed_unchecked(name, pos_str)
 	mesecon.opened_luacontrollers[pos_str][name] = nil
-	if #(mesecon.opened_luacontrollers[pos_str]) == 0 then
+	if next(mesecon.opened_luacontrollers[pos_str]) == nil then
 		mesecon.opened_luacontrollers[pos_str] = nil
 	end
 	mesecon.opened_luacontrollers_players[name] = nil
 end
 
 local function formspec_opened(name, pos)
-	if (not name or name == "" or not pos) then return end
+	if (name == nil or name == "" or not pos) then return end
 	local pos_str = vector.to_string(pos)
 	if not pos_str then return end
 	formspec_opened_unchecked(name, pos_str)
 end
 
 local function formspec_closed(name)
-	if (not name or name == "") then return end
+	if (name == nil or name == "") then return end
 	local pos_str = mesecon.opened_luacontrollers_players[name]
 	if not pos_str then 
 		mesecon.opened_luacontrollers_players[name] = nil
@@ -979,85 +988,126 @@ end
 
 local function clear_opened_formspecs(pos)
 	local pos_str = vector.to_string(pos)
+	local pkey = minetest.hash_node_position(pos)
 	if not pos_str then return end
 	for player,_ in pairs(mesecon.opened_luacontrollers[pos_str] or {}) do
 		minetest.close_formspec(player, BASENAME)
 		mesecon.opened_luacontrollers_players[player] = nil
 	end
 	mesecon.opened_luacontrollers[pos_str] = nil
+	-- Also clear the cache associated with this controller
+	mesecon.luacontroller_formspec_cache[pkey] = nil
 end
 
-local function update_formspec(pos, code, errmsg, selected_tab, mem_text)
-	local meta = minetest.get_meta(pos)
-	code = minetest.formspec_escape(code or "")
-	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
-	mem_text = mem_text or ""
-	local tab_sel = tonumber(selected_tab) or 1
-	-- Determine whether we have errors to show
-	local errs = load_errors(meta)
-	local has_errors = (#errs > 0)
-	-- Build tabs string
-	local tabs = "Code,Memory"
-	if has_errors then tabs = tabs .. ",Errors" end
-	-- Clamp selection
-	if not has_errors and tab_sel > 2 then tab_sel = 1 end
-	local formspec = "size[12,11]"
-		.."style_type[label,textarea;font=mono]"
-		.."background[-0.2,-0.25;12.4,11.75;jeija_luac_background.png]"
-		.."hypertext[0.3,8.35;13,0.6;error;"..errmsg.."]"
-		.."tabheader[0,0;luac_tab;"..tabs..";"..tostring(tab_sel)..";false;false]"
+-- Engine limits formspecs to ~750KB, worst case scenario is < 200MB
+-- In norml use will be magnitudes less even when full
+-- Other failsafes also limit formspec size
+local MAX_FORMSPEC_CACHE_SIZE = mesecon.setting("max_formspec_cache_size", 200)
+-- Memory can actually store significantly more characters then luacontroller_memsize if the data is highly compressible
+-- This can lead to client hangs and network issues when the formspec is sent to client
+local MAX_MEMORY_DiSPLAY_SIZE = mesecon.setting("max_memory_display_size", 524288) -- 512 KiB
 
-	if tab_sel == 1 then
-		local is_lib = meta:get_int("is_library")
-		local lib_name = minetest.formspec_escape(meta:get_string("library_name") or "")
-		local full_name = minetest.formspec_escape(meta:get_string("library_fullname") or "")
-		if is_lib == 1 then
-			formspec = formspec
-				.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
-				.."checkbox[0.2,9.75;is_library;Library;true]"
-				.."field[2.0,10.0;4.5,0.8;library_name;Library name;"..lib_name.."]"
-				.."image_button[8.75,9.9;1.5,0.8;jeija_luac_savebutton.png;save_library;]"
-				.."textarea[0.5,10.5;11.6,0.75;;Full library name: "..full_name..";]"
-		else
-			formspec = formspec
-				.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
-				.."checkbox[0.2,9.75;is_library;Library;false]"
-				.."image_button[8.75,9.9;2.5,0.8;jeija_luac_runbutton.png;program;]"
-		end
-	elseif tab_sel == 2 then
-		-- mem_text should already be escaped by caller
-		formspec = formspec
-			.."textarea[0.2,0.2;12.2,9.5;;;"..mem_text.."]"
-		-- Auto-refresh checkbox stored per-node in meta as luac_mem_autorefresh (1 = on, 0 = off).
-		local autoref = meta:get_int("luac_mem_autorefresh")
-		-- default to enabled if unset
-		if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
-		if autoref == 1 then
-			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;true]"
-			-- when autoref is enabled, no manual refresh button
-		else
-			formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;false]"
-			formspec = formspec .. "button[4.75,9.25;2.5,0.8;refresh;Refresh]"
-		end
-	elseif tab_sel == 3 and has_errors then
-		-- format errors into a readable multi-line string
-		local lines = {}
-		for i = #errs, 1, -1 do
-			local e = errs[i]
-			local ts = os.date("%Y-%m-%d %H:%M:%S", e.time)
-			local ev = e.event_type or ""
-			table.insert(lines, "["..ts.."] ("..ev..") "..(e.msg or ""))
-		end
-		local err_text = minetest.formspec_escape(table.concat(lines, "\n"))
-		formspec = formspec .. "textarea[0.2,0.2;12.2,9.0;;;"..err_text.."]"
-		formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
-		formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
-	end
-	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
-	meta:set_string("formspec", formspec)
-	meta:mark_as_private("formspec")
+local function update_formspec(pos, refresh, code_override)
 	local pos_str = vector.to_string(pos)
-	for player,_ in pairs(mesecon.opened_luacontrollers[pos_str] or {}) do
+	local pkey = minetest.hash_node_position(pos)
+	local opened = mesecon.opened_luacontrollers[pos_str]
+	if opened == nil then
+		 -- No players are viewing the formspec, evict the old cache instead of refreshing and exit
+		if refresh then mesecon.luacontroller_formspec_cache[pkey] = nil end
+		return
+	end
+	local meta = minetest.get_meta(pos)
+	local cache = mesecon.luacontroller_formspec_cache[pkey]
+	local legacy = meta:get("formspec")
+	local formspec
+	if (refresh or (cache == nil and (not legacy or legacy == ""))) then
+		local errmsg = meta:get_string("luac_errmsg")
+		local tab_sel = meta:get_int("luac_tab_sel")
+		if tab_sel == 0 then tab_sel = 1 end
+		-- Determine whether we have errors to show
+		local errs = load_errors(meta)
+		local has_errors = (#errs > 0)
+		-- Build tabs string
+		local tabs = "Code,Memory"
+		if has_errors then tabs = tabs .. ",Errors" end
+		-- Clamp selection
+		if not has_errors and tab_sel > 2 then tab_sel = 1 end
+		formspec = "size[12,11]"
+			.."style_type[label,textarea;font=mono]"
+			.."background[-0.2,-0.25;12.4,11.75;jeija_luac_background.png]"
+			.."tabheader[0,0;luac_tab;"..tabs..";"..tostring(tab_sel)..";false;false]"
+
+		if tab_sel == 1 then
+			local code = minetest.formspec_escape(code_override or meta:get_string("code"))
+			local is_lib = meta:get_int("is_library")
+			local lib_name = minetest.formspec_escape(meta:get_string("library_name"))
+			local full_name = minetest.formspec_escape(meta:get_string("library_fullname"))
+			if is_lib == 1 then
+				formspec = formspec
+					.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+					.."checkbox[0.2,9.75;is_library;Library;true]"
+					.."field[2.0,10.0;4.5,0.8;library_name;Library name;"..lib_name.."]"
+					.."image_button[8.75,9.9;1.5,0.8;jeija_luac_savebutton.png;save_library;]"
+					.."textarea[0.5,10.5;11.6,0.75;;Full library name: "..full_name..";]"
+			else
+				formspec = formspec
+					.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
+					.."checkbox[0.2,9.75;is_library;Library;false]"
+					.."image_button[8.75,9.9;2.5,0.8;jeija_luac_runbutton.png;program;]"
+			end
+		elseif tab_sel == 2 then
+			local mem = load_memory(meta)
+			local mem_text = minetest.formspec_escape(dump(mem))
+			local mem_size = #mem_text
+			if mem_size > MAX_MEMORY_DiSPLAY_SIZE then
+				mem_text = mem_text:sub(1, MAX_MEMORY_DiSPLAY_SIZE)
+				errmsg =  "Displayed memory truncated to "..tostring(limit).." characters. Total size is "..tostring(mem_size).."."
+			end
+			formspec = formspec
+				.."textarea[0.2,0.2;12.2,9.5;;;"..mem_text.."]"
+			-- Auto-refresh checkbox stored per-node in meta as luac_mem_autorefresh (1 = on, 0 = off).
+			local autoref = meta:get_int("luac_mem_autorefresh")
+			-- default to enabled if unset
+			if autoref == 0 and meta:get_string("luac_mem_autorefresh") == "" then autoref = 1 end
+			if autoref == 1 then
+				formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;true]"
+				-- when autoref is enabled, no manual refresh button
+			else
+				formspec = formspec .. "checkbox[2.5,9.25;mem_autoref;Auto-refresh;false]"
+				formspec = formspec .. "button[4.75,9.25;2.5,0.8;refresh;Refresh]"
+			end
+		elseif tab_sel == 3 and has_errors then
+			-- format errors into a readable multi-line string
+			local lines = {}
+			for i = #errs, 1, -1 do
+				local e = errs[i]
+				local ts = os.date("%Y-%m-%d %H:%M:%S", e.time)
+				local ev = e.event_type or ""
+				table.insert(lines, "["..ts.."] ("..ev..") "..(e.msg or ""))
+			end
+			local err_text = minetest.formspec_escape(table.concat(lines, "\n"))
+			formspec = formspec .. "textarea[0.2,0.2;12.2,9.0;;;"..err_text.."]"
+			formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
+			formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
+		end
+		formspec = formspec
+			.."hypertext[0.3,8.35;13,0.6;error;"..errmsg.."]"
+			.."image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
+		-- Clear the cache if it got too large before adding to it
+		if mesecon.luacontroller_formspec_cache_size > MAX_FORMSPEC_CACHE_SIZE then
+			mesecon.luacontroller_formspec_cache = {}
+			mesecon.luacontroller_formspec_cache_size = 0
+		end
+		mesecon.luacontroller_formspec_cache[pkey] = formspec
+		-- Delete formspec from old controllers
+		if legacy ~= nil then meta:set("formspec", nil) end
+	elseif (legacy and legacy ~= "") then
+		-- Display old formspec still stored in meta to preserve the errmsg
+		formspec = legacy
+	else
+		formspec = cache
+	end
+	for player,_ in pairs(opened) do
 		if (mesecon.opened_luacontrollers_players[player] ~= nil) then
 			minetest.show_formspec(player, BASENAME, formspec)
 		else
@@ -1071,9 +1121,8 @@ end
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
 	local err = update_code(meta, code)
-	-- Code could not be saved correctly, display what is actually in the controller
-	if err ~= nil then code = meta:get_string("code") end
-	update_formspec(pos, code, err or errmsg, 1, "")
+	update_errmsg(meta, err or errmsg)
+	update_formspec(pos, true)
 	meta:set_int("luac_id", math.random(1, 65535))
 	return err
 end
@@ -1086,6 +1135,7 @@ local function on_construct(pos)
 	meta:set_string("library_name", "")
 	meta:set_int("luac_tab_sel", 1)  -- Default to Code tab
 	meta:set_int("luac_mem_autorefresh", 1)  -- Auto-refresh enabled by default
+	meta:set_string("luac_errmsg", "")
 	reset_meta(pos, "", "")
 end
 
@@ -1093,12 +1143,8 @@ end
 local function on_rightclick(pos, node, clicker, itemstack, pointed_thing)
 	local name = clicker and clicker:get_player_name() or ""
 	if (name ~= "") then
-		local meta = minetest.get_meta(pos)
-		local formspec = meta:get_string("formspec")
-		if (formspec ~= "") then
-			formspec_opened(name, pos)
-			minetest.show_formspec(name, BASENAME, formspec)
-		end
+		formspec_opened(name, pos)
+		update_formspec(pos, false)
 	end
 	return itemstack
 end
@@ -1112,9 +1158,6 @@ local function run(pos, event)
 	end
 	local code = meta:get_string("code")
 	local ok, errmsg = run_inner(pos, code, event)
-	-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
-	local sel = meta:get_int("luac_tab_sel")
-	if sel == 0 then sel = 1 end
 	if not ok then
 		-- record error in node meta (all errors)
 		local meta = minetest.get_meta(pos)
@@ -1124,18 +1167,13 @@ local function run(pos, event)
 		if event and event.type == "program" then
 			reset_meta(pos, code, errmsg)
 		else -- Otherwise refresh the formspec to display the error
-			if sel == 1 then
-				update_formspec(pos, code, errmsg, 1, "")
-			elseif sel == 2 then
-				local mem = load_memory(meta)
-				local mem_text = minetest.formspec_escape(dump(mem))
-				update_formspec(pos, "", errmsg, 2, mem_text)
-			else
-				update_formspec(pos, "", errmsg, sel, "")
-			end
+			update_errmsg(meta, errmsg)
+			update_formspec(pos, true)
 		end
 	else
-		if sel == 1 then
+		-- Preserve the last selected tab (stored in node meta). Default to 1 (Code).
+		local sel = meta:get_int("luac_tab_sel")
+		if (sel == 1 or sel == 0) then
 			-- Code tab selected
 			-- there is absolutely no need to refresh the formspec as nothing will visibly change
 		elseif sel == 2 then
@@ -1144,7 +1182,8 @@ local function run(pos, event)
 			if autoref == 1 then
 				local mem = load_memory(meta)
 				local mem_text = minetest.formspec_escape(dump(mem))
-				update_formspec(pos, "", errmsg, 2, mem_text)
+				update_errmsg(meta, errmsg)
+				update_formspec(pos, true)
 			else
 				-- autoref disabled: do not rebuild the formspec on external events
 			end
@@ -1263,9 +1302,9 @@ local function receive_fields(player, formname, fields)
 		local calls = count_load_library_calls(code)
 		local limit = is_library and 0 or get_max_library_calls()
 		if calls > limit then
-			local errmsg = "Too many load_library() calls ("..calls.."). Limit is "..limit.."."
 			update_code(meta, "")
-			update_formspec(pos, code, errmsg, 1, "")
+			update_errmsg(meta, "Too many load_library() calls ("..calls.."). Limit is "..limit..".")
+			update_formspec(pos, true, code)
 			return true
 		end
 
@@ -1274,17 +1313,20 @@ local function receive_fields(player, formname, fields)
 			if not library_name or library_name == "" then
 				-- Clear the code from "code" metadata but not formspec so user does not lose it
 				update_code(meta, "")
-				update_formspec(pos, code, "Library name cannot be empty!", 1, "")
+				update_errmsg(meta, "Library name cannot be empty!")
+				update_formspec(pos, true, code)
 				return true
 			end
 			if #library_name > 256 then
 				update_code(meta, "")
-				update_formspec(pos, code, "Library name too long (max 256).", 1, "")
+				update_errmsg(meta, "Library name too long (max 256).")
+				update_formspec(pos, true, code)
 				return true
 			end
 			if not library_name:match("^[A-Za-z0-9,%.%-%_=+@#%%*]+$") then
 				update_code(meta, "")
-				update_formspec(pos, code, "Library name contains invalid characters.", 1, "")
+				update_errmsg(meta, "Library name contains invalid characters.")
+				update_formspec(pos, true, code)
 				return true
 			end
 		end
@@ -1298,7 +1340,8 @@ local function receive_fields(player, formname, fields)
 				local other = storage:get_string(fullname)
 				if other ~= "" and other ~= curpos_str then
 					update_code(meta, "")
-					update_formspec(pos, code, "Duplicate library name for another controller.", 1, "")
+					update_errmsg(meta, "Duplicate library name for another controller.")
+					update_formspec(pos, true, code)
 					return true
 				end
 
@@ -1319,26 +1362,30 @@ local function receive_fields(player, formname, fields)
 
 			-- Error occured when saving code - show it
 			if err ~= nil then
-				update_formspec(pos, meta:get_string("code"), err, 1, "")
+				update_errmsg(meta, err)
+				update_formspec(pos, true)
 				return true
 			end
 			
 			-- Check syntax without executing
 			if code:byte(1) == 27 then
-				update_formspec(pos, code, "Binary code prohibited.", 1, "")
+				update_errmsg(meta, "Binary code prohibited.")
+				update_formspec(pos, true)
 				return true
 			end
 			local f, msg = loadstring(code)
 			if not f then
 				-- Syntax error - show it
-				update_formspec(pos, code, msg or "Syntax error", 1, "")
+				update_errmsg(meta, msg or "Syntax error")
+				update_formspec(pos, true)
 				return true
 			end
 			
 			-- Clear cache to force reload on next use
 			mesecon.library_cache[fullname] = nil
 			-- Show success message
-			update_formspec(pos, code, "Library saved successfully!", 1, "")
+			update_errmsg(meta, "Library saved successfully!")
+			update_formspec(pos, true)
 		else
 			local old_fullname = meta:get_string("library_fullname")
 			
@@ -1366,16 +1413,8 @@ local function receive_fields(player, formname, fields)
 		local sel = tonumber(fields.luac_tab) or 1
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", sel)
-		local code = ""
-		local errmsg = ""
-		local mem_text = ""
-		if sel == 1 then
-			code = meta:get_string("code")
-		elseif sel == 2 then
-			local mem = load_memory(meta)
-			mem_text = minetest.formspec_escape(dump(mem))
-		end
-		update_formspec(pos, code, errmsg, sel, mem_text)
+		update_errmsg(meta, "")
+		update_formspec(pos, true)
 		return true
 	end
 
@@ -1386,21 +1425,10 @@ local function receive_fields(player, formname, fields)
 			return true
 		end
 		local meta = minetest.get_meta(pos)
-		local sel = meta:get_int("luac_tab_sel")
-		if sel == 0 then sel = 2 end
 		local enabled = (fields.mem_autoref == "true") and 1 or 0
 		meta:set_int("luac_mem_autorefresh", enabled)
 		-- Rebuild formspec to reflect new checkbox/button state
-		local code = ""
-		local errmsg = ""
-		local mem_text = ""
-		if sel == 1 then
-			code = meta:get_string("code")
-		elseif sel == 2 then
-			local mem = load_memory(meta)
-			mem_text = minetest.formspec_escape(dump(mem))
-		end
-		update_formspec(pos, code, errmsg, sel, mem_text)
+		update_formspec(pos, true)
 		return true
 	end
 
@@ -1414,47 +1442,18 @@ local function receive_fields(player, formname, fields)
 		local enabled = (fields.is_library == "true") and 1 or 0
 		meta:set_int("is_library", enabled)
 		-- Rebuild formspec to show/hide library_name and change button
-		local sel = meta:get_int("luac_tab_sel")
-		if sel == 0 then sel = 1 end
-		local code = ""
-		local errmsg = ""
-		local mem_text = ""
-		if sel == 1 then
-			code = meta:get_string("code")
-		elseif sel == 2 then
-			local mem = load_memory(meta)
-			mem_text = minetest.formspec_escape(dump(mem))
-		end
-		update_formspec(pos, code, errmsg, sel, mem_text)
+		update_formspec(pos, true)
 		return true
 	end
 
-	if fields.refresh then
+	if fields.refresh or fields.refresh_errors then
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
 			return true
 		end
 		local meta = minetest.get_meta(pos)
-		meta:set_int("luac_tab_sel", 2)
-		local code = ""
-		local errmsg = ""
-		local mem = load_memory(meta)
-		local mem_text = minetest.formspec_escape(dump(mem))
-		update_formspec(pos, code, errmsg, 2, mem_text)
-		return true
-	end
-
-	if fields.refresh_errors then
-		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
-			minetest.record_protection_violation(pos, name)
-			return true
-		end
-		local meta = minetest.get_meta(pos)
-		meta:set_int("luac_tab_sel", 3)
-		local code = ""
-		local errmsg = ""
-		local mem_text = ""
-		update_formspec(pos, code, errmsg, 3, mem_text)
+		update_errmsg(meta, "")
+		update_formspec(pos, true)
 		return true
 	end
 
@@ -1467,17 +1466,9 @@ local function receive_fields(player, formname, fields)
 		local meta = minetest.get_meta(pos)
 		save_errors(meta, {})
 		local sel = meta:get_int("luac_tab_sel")
-		if (sel == 3 or sel == 0) then sel = 1 end
-		local code = ""
-		local errmsg = ""
-		local mem_text = ""
-		if sel == 1 then
-			code = meta:get_string("code")
-		elseif sel == 2 then
-			local mem = load_memory(meta)
-			mem_text = minetest.formspec_escape(dump(mem))
-		end
-		update_formspec(pos, code, errmsg, sel, mem_text)
+		if (sel == 3 or sel == 0) then meta:set_int("luac_tab_sel", 1) end
+		update_errmsg(meta, "")
+		update_formspec(pos, true)
 		return true
 	end
 	return true
