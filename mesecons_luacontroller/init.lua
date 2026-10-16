@@ -996,9 +996,11 @@ local function clear_opened_formspecs(pos)
 	end
 	mesecon.opened_luacontrollers[pos_str] = nil
 	-- Also clear the cache associated with this controller
-	mesecon.luacontroller_formspec_cache[pkey] = nil
-	if mesecon.luacontroller_formspec_cache_size > 0 then
-		mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size - 1
+	if mesecon.luacontroller_formspec_cache[pkey] ~= nil then
+		mesecon.luacontroller_formspec_cache[pkey] = nil
+		if mesecon.luacontroller_formspec_cache_size > 0 then
+			mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size - 1
+		end
 	end
 end
 
@@ -1016,7 +1018,7 @@ local function update_formspec(pos, refresh, code_override)
 	local opened = mesecon.opened_luacontrollers[pos_str]
 	if opened == nil then
 		 -- No players are viewing the formspec, evict the old cache instead of refreshing and exit
-		if refresh then
+		if (refresh and mesecon.luacontroller_formspec_cache[pkey] ~= nil) then
 			mesecon.luacontroller_formspec_cache[pkey] = nil
 			if mesecon.luacontroller_formspec_cache_size > 0 then
 				mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size - 1
