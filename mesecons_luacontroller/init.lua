@@ -1110,7 +1110,7 @@ local function update_formspec(pos, refresh, code_override)
 		mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size + 1
 		-- Delete formspec from old controllers
 		if legacy ~= "" then meta:set_string("formspec", "") end
-	elseif (legacy ~= "") then
+	elseif legacy ~= "" then
 		-- Display old formspec still stored in meta to preserve the errmsg
 		formspec = legacy
 	else
