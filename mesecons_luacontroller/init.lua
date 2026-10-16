@@ -1293,6 +1293,12 @@ local function receive_fields(player, formname, fields)
 	if not pos_str then return true end
 	local pos = vector.from_string(pos_str)
 	if not pos then return true end
+	-- Check if the controller still exists and loaded
+	local node_name = minetest.get_node(pos).name
+	if (not node_name or node_name:sub(1, #BASENAME) ~= BASENAME) then
+		clear_opened_formspecs(pos)
+		return true
+	end
 	-- Handle player closing the formspec
 	if fields.quit == true then
 		formspec_closed_unchecked(name, pos_str)
