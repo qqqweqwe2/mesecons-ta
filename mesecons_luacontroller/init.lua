@@ -1026,9 +1026,9 @@ local function update_formspec(pos, refresh, code_override)
 	end
 	local meta = minetest.get_meta(pos)
 	local cache = mesecon.luacontroller_formspec_cache[pkey]
-	local legacy = meta:get("formspec")
+	local legacy = meta:get_string("formspec")
 	local formspec
-	if (refresh or (cache == nil and (not legacy or legacy == ""))) then
+	if (refresh or (cache == nil and legacy == "")) then
 		local errmsg = meta:get_string("luac_errmsg")
 		local tab_sel = meta:get_int("luac_tab_sel")
 		if tab_sel == 0 then tab_sel = 1 end
@@ -1109,8 +1109,8 @@ local function update_formspec(pos, refresh, code_override)
 		mesecon.luacontroller_formspec_cache[pkey] = formspec
 		mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size + 1
 		-- Delete formspec from old controllers
-		if legacy ~= nil then meta:set("formspec", nil) end
-	elseif (legacy and legacy ~= "") then
+		if legacy ~= "" then meta:set_string("formspec", "") end
+	elseif (legacy ~= "") then
 		-- Display old formspec still stored in meta to preserve the errmsg
 		formspec = legacy
 	else
