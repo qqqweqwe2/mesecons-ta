@@ -45,6 +45,9 @@ local storage = minetest.get_mod_storage()
 mesecon.library_storage = storage
 mesecon.library_cache = mesecon.library_cache or {}
 mesecon.library_call_count = mesecon.library_call_count or {}
+-- Track which players have luacontroller UI currently open, with two-way lookup
+mesecon.opened_luacontrollers = mesecon.opened_luacontrollers or {}
+mesecon.opened_luacontrollers_players = mesecon.opened_luacontrollers_players or {}
 
 local LIB_FORMAT_VERSION = storage:get_string("lib_format_version") or "legacy"
 
@@ -941,7 +944,51 @@ local function update_code(meta, code)
 	return err
 end
 
-local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
+local function formspec_opened_unchecked(name, pos_str)
+	mesecon.opened_luacontrollers_players[name] = pos_str
+	if not mesecon.opened_luacontrollers[pos_str] then
+		mesecon.opened_luacontrollers[pos_str] = {}
+	end
+	mesecon.opened_luacontrollers[pos_str][name] = true
+end
+
+local function formspec_closed_unchecked(name, pos_str)
+	mesecon.opened_luacontrollers[pos_str][name] = nil
+	if #(mesecon.opened_luacontrollers[pos_str]) == 0 then
+		mesecon.opened_luacontrollers[pos_str] = nil
+	end
+	mesecon.opened_luacontrollers_players[name] = nil
+end
+
+local function formspec_opened(name, pos)
+	if (not name or name == "" or not pos) then return end
+	local pos_str = vector.to_string(pos)
+	if not pos_str then return end
+	formspec_opened_unchecked(name, pos_str)
+end
+
+local function formspec_closed(name)
+	if (not name or name == "") then return end
+	local pos_str = mesecon.opened_luacontrollers_players[name]
+	if not pos_str then 
+		mesecon.opened_luacontrollers_players[name] = nil
+		return
+	end
+	formspec_closed_unchecked(name, pos_str)
+end
+
+local function clear_opened_formspecs(pos)
+	local pos_str = vector.to_string(pos)
+	if not pos_str then return end
+	for player,_ in pairs(mesecon.opened_luacontrollers[pos_str] or {}) do
+		minetest.close_formspec(player, BASENAME)
+		mesecon.opened_luacontrollers_players[player] = nil
+	end
+	mesecon.opened_luacontrollers[pos_str] = nil
+end
+
+local function update_formspec(pos, code, errmsg, selected_tab, mem_text)
+	local meta = minetest.get_meta(pos)
 	code = minetest.formspec_escape(code or "")
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
 	mem_text = mem_text or ""
@@ -1008,6 +1055,17 @@ local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
 	end
 	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
 	meta:set_string("formspec", formspec)
+	meta:mark_as_private("formspec")
+	local pos_str = vector.to_string(pos)
+	for player,_ in pairs(mesecon.opened_luacontrollers[pos_str] or {}) do
+		if (mesecon.opened_luacontrollers_players[player] ~= nil) then
+			minetest.show_formspec(player, BASENAME, formspec)
+		else
+			-- This should not have happened, close UI and clear inconsistent record
+			minetest.close_formspec(player, BASENAME)
+			formspec_closed_unchecked(player, pos_str)
+		end
+	end
 end
 
 local function reset_meta(pos, code, errmsg)
@@ -1015,7 +1073,7 @@ local function reset_meta(pos, code, errmsg)
 	local err = update_code(meta, code)
 	-- Code could not be saved correctly, display what is actually in the controller
 	if err ~= nil then code = meta:get_string("code") end
-	update_formspec(meta, code, err or errmsg, 1, "")
+	update_formspec(pos, code, err or errmsg, 1, "")
 	meta:set_int("luac_id", math.random(1, 65535))
 	return err
 end
@@ -1029,6 +1087,20 @@ local function on_construct(pos)
 	meta:set_int("luac_tab_sel", 1)  -- Default to Code tab
 	meta:set_int("luac_mem_autorefresh", 1)  -- Auto-refresh enabled by default
 	reset_meta(pos, "", "")
+end
+
+-- Show formspec UI to player when they click the controller
+local function on_rightclick(pos, node, clicker, itemstack, pointed_thing)
+	local name = clicker and clicker:get_player_name() or ""
+	if (name ~= "") then
+		local meta = minetest.get_meta(pos)
+		local formspec = meta:get_string("formspec")
+		if (formspec ~= "") then
+			formspec_opened(name, pos)
+			minetest.show_formspec(name, BASENAME, formspec)
+		end
+	end
+	return itemstack
 end
 
 -- Wraps run_inner with LC-reset-on-error
@@ -1053,13 +1125,13 @@ local function run(pos, event)
 			reset_meta(pos, code, errmsg)
 		else -- Otherwise refresh the formspec to display the error
 			if sel == 1 then
-				update_formspec(meta, code, errmsg, 1, "")
+				update_formspec(pos, code, errmsg, 1, "")
 			elseif sel == 2 then
 				local mem = load_memory(meta)
 				local mem_text = minetest.formspec_escape(dump(mem))
-				update_formspec(meta, "", errmsg, 2, mem_text)
+				update_formspec(pos, "", errmsg, 2, mem_text)
 			else
-				update_formspec(meta, "", errmsg, sel, "")
+				update_formspec(pos, "", errmsg, sel, "")
 			end
 		end
 	else
@@ -1072,7 +1144,7 @@ local function run(pos, event)
 			if autoref == 1 then
 				local mem = load_memory(meta)
 				local mem_text = minetest.formspec_escape(dump(mem))
-				update_formspec(meta, "", errmsg, 2, mem_text)
+				update_formspec(pos, "", errmsg, 2, mem_text)
 			else
 				-- autoref disabled: do not rebuild the formspec on external events
 			end
@@ -1163,13 +1235,23 @@ local function set_program(pos, code)
 	return run(pos, {type="program"})
 end
 
-local function on_receive_fields(pos, _, fields, sender)
+local function receive_fields(player, formname, fields)
+	if formname ~= BASENAME then return false end
+	local name = player and player:get_player_name() or ""
+	if name == "" then return true end
+	local pos_str = mesecon.opened_luacontrollers_players[name]
+	if not pos_str then return true end
+	local pos = vector.from_string(pos_str)
+	if not pos then return true end
+	-- Handle player closing the formspec
+	if fields.quit == true then
+		formspec_closed_unchecked(name, pos_str)
+	end
 	-- Handle programming, tab switching and memory refresh
 	if fields.program or fields.save_library then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		local code = fields.code or ""
@@ -1183,8 +1265,8 @@ local function on_receive_fields(pos, _, fields, sender)
 		if calls > limit then
 			local errmsg = "Too many load_library() calls ("..calls.."). Limit is "..limit.."."
 			update_code(meta, "")
-			update_formspec(meta, code, errmsg, 1, "")
-			return
+			update_formspec(pos, code, errmsg, 1, "")
+			return true
 		end
 
 		-- If saving as library, validate name
@@ -1192,18 +1274,18 @@ local function on_receive_fields(pos, _, fields, sender)
 			if not library_name or library_name == "" then
 				-- Clear the code from "code" metadata but not formspec so user does not lose it
 				update_code(meta, "")
-				update_formspec(meta, code, "Library name cannot be empty!", 1, "")
-				return
+				update_formspec(pos, code, "Library name cannot be empty!", 1, "")
+				return true
 			end
 			if #library_name > 256 then
 				update_code(meta, "")
-				update_formspec(meta, code, "Library name too long (max 256).", 1, "")
-				return
+				update_formspec(pos, code, "Library name too long (max 256).", 1, "")
+				return true
 			end
 			if not library_name:match("^[A-Za-z0-9,%.%-%_=+@#%%*]+$") then
 				update_code(meta, "")
-				update_formspec(meta, code, "Library name contains invalid characters.", 1, "")
-				return
+				update_formspec(pos, code, "Library name contains invalid characters.", 1, "")
+				return true
 			end
 		end
 
@@ -1216,8 +1298,8 @@ local function on_receive_fields(pos, _, fields, sender)
 				local other = storage:get_string(fullname)
 				if other ~= "" and other ~= curpos_str then
 					update_code(meta, "")
-					update_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
-					return
+					update_formspec(pos, code, "Duplicate library name for another controller.", 1, "")
+					return true
 				end
 
 				if old_fullname and old_fullname ~= "" then
@@ -1237,26 +1319,26 @@ local function on_receive_fields(pos, _, fields, sender)
 
 			-- Error occured when saving code - show it
 			if err ~= nil then
-				update_formspec(meta, meta:get_string("code"), err, 1, "")
-				return
+				update_formspec(pos, meta:get_string("code"), err, 1, "")
+				return true
 			end
 			
 			-- Check syntax without executing
 			if code:byte(1) == 27 then
-				update_formspec(meta, code, "Binary code prohibited.", 1, "")
-				return
+				update_formspec(pos, code, "Binary code prohibited.", 1, "")
+				return true
 			end
 			local f, msg = loadstring(code)
 			if not f then
 				-- Syntax error - show it
-				update_formspec(meta, code, msg or "Syntax error", 1, "")
-				return
+				update_formspec(pos, code, msg or "Syntax error", 1, "")
+				return true
 			end
 			
 			-- Clear cache to force reload on next use
 			mesecon.library_cache[fullname] = nil
 			-- Show success message
-			update_formspec(meta, code, "Library saved successfully!", 1, "")
+			update_formspec(pos, code, "Library saved successfully!", 1, "")
 		else
 			local old_fullname = meta:get_string("library_fullname")
 			
@@ -1273,11 +1355,11 @@ local function on_receive_fields(pos, _, fields, sender)
 			local ok, err = set_program(pos, code)
 			if not ok then
 				minetest.log("action", "Lua controller programming error: " .. tostring(err))
-				return
+				return true
 			end
 		end
 
-		return
+		return true
 	end
 
 	if fields.luac_tab then
@@ -1293,16 +1375,15 @@ local function on_receive_fields(pos, _, fields, sender)
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		update_formspec(meta, code, errmsg, sel, mem_text)
-		return
+		update_formspec(pos, code, errmsg, sel, mem_text)
+		return true
 	end
 
 	-- Handle autorefresh checkbox toggle
 	if fields.mem_autoref ~= nil then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		local sel = meta:get_int("luac_tab_sel")
@@ -1319,16 +1400,15 @@ local function on_receive_fields(pos, _, fields, sender)
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		update_formspec(meta, code, errmsg, sel, mem_text)
-		return
+		update_formspec(pos, code, errmsg, sel, mem_text)
+		return true
 	end
 
 	-- Handle Library checkbox toggle (show/hide library_name field)
 	if fields.is_library ~= nil then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		local enabled = (fields.is_library == "true") and 1 or 0
@@ -1345,15 +1425,14 @@ local function on_receive_fields(pos, _, fields, sender)
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		update_formspec(meta, code, errmsg, sel, mem_text)
-		return
+		update_formspec(pos, code, errmsg, sel, mem_text)
+		return true
 	end
 
 	if fields.refresh then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", 2)
@@ -1361,31 +1440,29 @@ local function on_receive_fields(pos, _, fields, sender)
 		local errmsg = ""
 		local mem = load_memory(meta)
 		local mem_text = minetest.formspec_escape(dump(mem))
-		update_formspec(meta, code, errmsg, 2, mem_text)
-		return
+		update_formspec(pos, code, errmsg, 2, mem_text)
+		return true
 	end
 
 	if fields.refresh_errors then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		meta:set_int("luac_tab_sel", 3)
 		local code = ""
 		local errmsg = ""
 		local mem_text = ""
-		update_formspec(meta, code, errmsg, 3, mem_text)
-		return
+		update_formspec(pos, code, errmsg, 3, mem_text)
+		return true
 	end
 
 	-- Handle clearing errors list
 	if fields.clear_errors then
-		local name = sender and sender:get_player_name() or ""
 		if minetest.is_protected(pos, name) and not minetest.check_player_privs(name, {protection_bypass=true}) then
 			minetest.record_protection_violation(pos, name)
-			return
+			return true
 		end
 		local meta = minetest.get_meta(pos)
 		save_errors(meta, {})
@@ -1400,10 +1477,30 @@ local function on_receive_fields(pos, _, fields, sender)
 			local mem = load_memory(meta)
 			mem_text = minetest.formspec_escape(dump(mem))
 		end
-		update_formspec(meta, code, errmsg, sel, mem_text)
-		return
+		update_formspec(pos, code, errmsg, sel, mem_text)
+		return true
 	end
+	return true
 end
+
+minetest.register_on_player_receive_fields(receive_fields)
+
+-- No longer send formspec updates to player who dies or logs off
+core.register_on_dieplayer(function(ref, reason)
+	local name = ref and ref:get_player_name() or ""
+	formspec_closed(name)
+end)
+
+core.register_on_leaveplayer(function(ref, timed_out)
+	local name = ref and ref:get_player_name() or ""
+	formspec_closed(name)
+end)
+
+-- Clear currently opened coltroller for a player that just joined in case this somehow was still set
+core.register_on_joinplayer(function(ref, last_login)
+	local name = ref and ref:get_player_name() or ""
+	formspec_closed(name)
+end)
 
 local controller_nodenames = {}
 
@@ -1490,7 +1587,7 @@ for d = 0, 1 do
 		selection_box = selection_box,
 		node_box = node_box,
 		on_construct = on_construct,
-		on_receive_fields = on_receive_fields,
+		on_rightclick = on_rightclick,
 		sounds = mesecon.node_sound.stone,
 		mesecons = mesecons,
 		digiline = digiline,
@@ -1504,6 +1601,7 @@ for d = 0, 1 do
 		},
 		on_destruct = function(pos)
 			-- Called BEFORE node/meta removal - library mapping still accessible
+			clear_opened_formspecs(pos)
 			remove_library_mapping(pos)
 		end,
 		after_dig_node = function (pos)
@@ -1542,7 +1640,7 @@ minetest.register_node(BASENAME .. "_burnt", {
 	selection_box = selection_box,
 	node_box = node_box,
 	on_construct = on_construct,
-	on_receive_fields = on_receive_fields,
+	on_rightclick = on_rightclick,
 	sounds = mesecon.node_sound.stone,
 	virtual_portstates = {a = false, b = false, c = false, d = false},
 	mesecons = {
@@ -1556,6 +1654,7 @@ minetest.register_node(BASENAME .. "_burnt", {
 	on_blast = mesecon.on_blastnode,
 	on_destruct = function(pos)
 		-- Called BEFORE node/meta removal - library mapping still accessible
+		clear_opened_formspecs(pos)
 		remove_library_mapping(pos)
 	end,
 	after_dig_node = function(pos)
