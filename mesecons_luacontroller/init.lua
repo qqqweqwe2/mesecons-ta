@@ -997,6 +997,9 @@ local function clear_opened_formspecs(pos)
 	mesecon.opened_luacontrollers[pos_str] = nil
 	-- Also clear the cache associated with this controller
 	mesecon.luacontroller_formspec_cache[pkey] = nil
+	if mesecon.luacontroller_formspec_cache_size > 0 then
+		mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size - 1
+	end
 end
 
 -- Engine limits formspecs to ~750KB, worst case scenario is < 200MB
@@ -1013,7 +1016,12 @@ local function update_formspec(pos, refresh, code_override)
 	local opened = mesecon.opened_luacontrollers[pos_str]
 	if opened == nil then
 		 -- No players are viewing the formspec, evict the old cache instead of refreshing and exit
-		if refresh then mesecon.luacontroller_formspec_cache[pkey] = nil end
+		if refresh then
+			mesecon.luacontroller_formspec_cache[pkey] = nil
+			if mesecon.luacontroller_formspec_cache_size > 0 then
+				mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size - 1
+			end
+		end
 		return
 	end
 	local meta = minetest.get_meta(pos)
@@ -1099,6 +1107,7 @@ local function update_formspec(pos, refresh, code_override)
 			mesecon.luacontroller_formspec_cache_size = 0
 		end
 		mesecon.luacontroller_formspec_cache[pkey] = formspec
+		mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size + 1
 		-- Delete formspec from old controllers
 		if legacy ~= nil then meta:set("formspec", nil) end
 	elseif (legacy and legacy ~= "") then
