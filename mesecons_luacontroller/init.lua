@@ -51,6 +51,7 @@ mesecon.opened_luacontrollers = mesecon.opened_luacontrollers or {}
 mesecon.opened_luacontrollers_players = mesecon.opened_luacontrollers_players or {}
 mesecon.luacontroller_formspec_cache = mesecon.luacontroller_formspec_cache or {}
 mesecon.luacontroller_formspec_cache_size = mesecon.luacontroller_formspec_cache_size or 0
+mesecon.luacontroller_rate_limits = mesecon.luacontroller_rate_limits or {}
 
 local LIB_FORMAT_VERSION = storage:get_string("lib_format_version") or "legacy"
 
@@ -953,6 +954,46 @@ local function update_code(meta, code)
 	return err
 end
 
+-- Tries to prevent rightlick and form submission spam DOS from modified clients
+-- Should not trip during normal gameplay
+-- "Token bucket" approach
+local RATE_LIMIT_BUCKET_SIZE = 50.0
+local RATE_LIMIT_BUCKET_RATE = 4.0 -- 250ms per click continuously for 12.5s, you really really have to try
+local function rate_limit(player, cost)
+	cost = cost or 1.0
+	local lim = mesecon.luacontroller_rate_limits[player] or {}
+	local clock = minetest.get_us_time() / 1e6 -- clock is in float seconds
+	local ct = clock - (lim.lastclick or clock - 1.0)
+	lim.lastclick = clock
+	local bucket = lim.bucket or RATE_LIMIT_BUCKET_SIZE
+	local rate = lim.rate or RATE_LIMIT_BUCKET_RATE
+	-- Regenerate the bucket
+	bucket = math.min(RATE_LIMIT_BUCKET_SIZE, math.max(0.0, bucket) + ct * rate)
+	local tripped = false
+	if bucket < 1.0 then
+		tripped = true
+		lim.tripped = (lim.tripped or 0) + 1
+		if lim.tripped < 100 then
+			minetest.chat_send_player(player, "Your interaction with the Luacontroller was rate limited ("..tostring(lim.tripped)..").")
+		elseif lim.tripped % 100 == 1 then
+			minetest.chat_send_player(player, "You are interacting with the Luacontroller way too fast. Please take a break.")
+			minetest.log("warning", "Luacontroller interaction limit tripped "..tostring(lim.tripped).." times by: "..player)
+			-- Reduce the rate even more for persistent players
+			lim.rate = math.max(0.2, rate / 2.0)
+		end
+		-- Empty the bucket to prevent accumulation on repeated trips, makes spam clicking completely useless
+		bucket = 0.0
+	else
+		-- Clear the reduced rate if the player actually stopped
+		if (lim.rate and bucket > RATE_LIMIT_BUCKET_SIZE * 0.5) then lim.rate = nil end
+		-- Subtract from the bucket
+		bucket = bucket - cost
+	end
+	lim.bucket = bucket
+	mesecon.luacontroller_rate_limits[player] = lim
+	return tripped
+end
+
 local function formspec_opened_unchecked(name, pos_str)
 	mesecon.opened_luacontrollers_players[name] = pos_str
 	if mesecon.opened_luacontrollers[pos_str] == nil then
@@ -1153,7 +1194,7 @@ end
 -- Show formspec UI to player when they click the controller
 local function on_rightclick(pos, node, clicker, itemstack, pointed_thing)
 	local name = clicker and clicker:get_player_name() or ""
-	if (name ~= "") then
+	if (name ~= "" and not rate_limit(name)) then
 		formspec_opened(name, pos)
 		update_formspec(pos, false)
 	end
@@ -1293,6 +1334,13 @@ local function receive_fields(player, formname, fields)
 	if not pos_str then return true end
 	local pos = vector.from_string(pos_str)
 	if not pos then return true end
+	if rate_limit(name) then
+		-- Register formspec close even when rate limited, this operation is not expensive
+		if fields.quit == true then
+			formspec_closed_unchecked(name, pos_str)
+		end
+		return true
+	end
 	-- Check if the controller still exists and loaded
 	local node_name = minetest.get_node(pos).name
 	if (not node_name or node_name:sub(1, #BASENAME) ~= BASENAME) then
@@ -1502,6 +1550,7 @@ end)
 core.register_on_leaveplayer(function(ref, timed_out)
 	local name = ref and ref:get_player_name() or ""
 	formspec_closed(name)
+	mesecon.luacontroller_rate_limits[name] = nil
 end)
 
 -- Clear currently opened coltroller for a player that just joined in case this somehow was still set
