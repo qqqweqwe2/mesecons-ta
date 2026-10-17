@@ -970,7 +970,7 @@ local function rate_limit(player, cost)
 	-- Regenerate the bucket
 	bucket = math.min(RATE_LIMIT_BUCKET_SIZE, math.max(0.0, bucket) + ct * rate)
 	local tripped = false
-	if bucket < 1.0 then
+	if bucket < cost then
 		tripped = true
 		lim.tripped = (lim.tripped or 0) + 1
 		if lim.tripped < 100 then
@@ -981,8 +981,8 @@ local function rate_limit(player, cost)
 			-- Reduce the rate even more for persistent players
 			lim.rate = math.max(0.2, rate / 2.0)
 		end
-		-- Empty the bucket to prevent accumulation on repeated trips, makes spam clicking completely useless
-		bucket = 0.0
+		-- Make spam clicking completely useless
+		bucket = bucket - math.min(1.0, cost)
 	else
 		-- Clear the reduced rate if the player actually stopped
 		if (lim.rate and bucket > RATE_LIMIT_BUCKET_SIZE * 0.5) then lim.rate = nil end
@@ -1161,7 +1161,10 @@ local function update_formspec(pos, refresh, code_override)
 	end
 	for player,_ in pairs(opened) do
 		if (mesecon.opened_luacontrollers_players[player] ~= nil) then
-			minetest.show_formspec(player, BASENAME, formspec)
+			-- Additional rate limiting for controllers with large formspecs
+			if (#formspec < 15000 or not rate_limit(player, 3.0)) then
+				minetest.show_formspec(player, BASENAME, formspec)
+			end
 		else
 			-- This should not have happened, close UI and clear inconsistent record
 			minetest.close_formspec(player, BASENAME)
