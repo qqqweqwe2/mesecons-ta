@@ -14,8 +14,8 @@
 -- set_port(pos, rule, state): activates/deactivates the mesecons according to the port states
 -- set_port_states(pos, ports, ignore_overheat): Applies new port states to a Luacontroller at pos
 -- run_inner(pos, code, event): runs code on the controller at pos and event
--- update_code(pos, code): installs new code, without resetting LCID
--- update_formspec(pos, code, errmsg, selected_tab, mem_text): updates the formspec and prints error messages
+-- update_code(meta, code): installs new code, without resetting LCID
+-- update_formspec(meta, code, errmsg, selected_tab, mem_text): updates the formspec and prints error messages
 -- reset_meta(pos, code, errmsg): performs a software-reset, installs new code and prints error message
 -- run(pos, event): a wrapper for run_inner which gets code & handles errors via reset_meta
 -- reset(pos): performs a hardware reset, turns off all ports
@@ -941,6 +941,10 @@ local function update_code(meta, code)
 	return err
 end
 
+-- Memory can actually store significantly more characters then luacontroller_memsize if the data is highly compressible
+-- This can lead to client hangs and network issues when the formspec is sent to client
+local MAX_MEMORY_DiSPLAY_SIZE = mesecon.setting("max_memory_display_size", 524288) -- 512 KiB
+
 local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
 	code = minetest.formspec_escape(code or "")
 	errmsg = minetest.formspec_escape(tostring(errmsg or ""))
@@ -957,13 +961,12 @@ local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
 	local formspec = "size[12,11]"
 		.."style_type[label,textarea;font=mono]"
 		.."background[-0.2,-0.25;12.4,11.75;jeija_luac_background.png]"
-		.."hypertext[0.3,8.35;13,0.6;error;"..errmsg.."]"
 		.."tabheader[0,0;luac_tab;"..tabs..";"..tostring(tab_sel)..";false;false]"
 
 	if tab_sel == 1 then
 		local is_lib = meta:get_int("is_library")
-		local lib_name = minetest.formspec_escape(meta:get_string("library_name") or "")
-		local full_name = minetest.formspec_escape(meta:get_string("library_fullname") or "")
+		local lib_name = minetest.formspec_escape(meta:get_string("library_name"))
+		local full_name = minetest.formspec_escape(meta:get_string("library_fullname"))
 		if is_lib == 1 then
 			formspec = formspec
 				.."textarea[0.2,0.2;12.2,9.5;code;;"..code.."]"
@@ -979,6 +982,11 @@ local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
 		end
 	elseif tab_sel == 2 then
 		-- mem_text should already be escaped by caller
+		local mem_size = #mem_text
+		if mem_size > MAX_MEMORY_DiSPLAY_SIZE then
+			mem_text = mem_text:sub(1, MAX_MEMORY_DiSPLAY_SIZE)
+			errmsg =  "Displayed memory truncated to "..tostring(limit).." characters. Total size is "..tostring(mem_size).."."
+		end
 		formspec = formspec
 			.."textarea[0.2,0.2;12.2,9.5;;;"..mem_text.."]"
 		-- Auto-refresh checkbox stored per-node in meta as luac_mem_autorefresh (1 = on, 0 = off).
@@ -1006,7 +1014,9 @@ local function update_formspec(meta, code, errmsg, selected_tab, mem_text)
 		formspec = formspec .. "button[2.25,9.25;2.5,0.8;refresh_errors;Refresh]"
 		formspec = formspec .. "button[4.75,9.25;2.5,0.8;clear_errors;Clear]"
 	end
-	formspec = formspec .. "image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
+	formspec = formspec
+		.."hypertext[0.3,8.35;13,0.6;error;"..errmsg.."]"
+		.."image_button_exit[11.72,-0.25;0.425,0.4;jeija_close_window.png;exit;]"
 	meta:set_string("formspec", formspec)
 end
 
