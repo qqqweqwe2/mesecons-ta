@@ -1553,7 +1553,7 @@ core.register_on_leaveplayer(function(ref, timed_out)
 	mesecon.luacontroller_rate_limits[name] = nil
 end)
 
--- Clear currently opened coltroller for a player that just joined in case this somehow was still set
+-- Clear currently opened controller for a player that just joined in case this somehow was still set
 core.register_on_joinplayer(function(ref, last_login)
 	local name = ref and ref:get_player_name() or ""
 	formspec_closed(name)
