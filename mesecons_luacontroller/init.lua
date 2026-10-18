@@ -963,7 +963,7 @@ local function rate_limit(player, cost)
 	cost = cost or 1.0
 	local lim = mesecon.luacontroller_rate_limits[player] or {}
 	local clock = minetest.get_us_time() / 1e6 -- clock is in float seconds
-	local ct = clock - (lim.lastclick or clock - 1.0)
+	local ct = clock - (lim.lastclick or clock - 1.0) -- time since previous click
 	lim.lastclick = clock
 	local bucket = lim.bucket or RATE_LIMIT_BUCKET_SIZE
 	local rate = lim.rate or RATE_LIMIT_BUCKET_RATE
@@ -986,6 +986,8 @@ local function rate_limit(player, cost)
 	else
 		-- Clear the reduced rate if the player actually stopped
 		if (lim.rate and bucket > RATE_LIMIT_BUCKET_SIZE * 0.5) then lim.rate = nil end
+		-- Clear the counter for players who have not interacted with a controller for 10 minutes
+		if (lim.tripped and ct > 600.0) then lim.tripped = nil end
 		-- Subtract from the bucket
 		bucket = bucket - cost
 	end
