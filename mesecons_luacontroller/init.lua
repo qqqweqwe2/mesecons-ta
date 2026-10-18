@@ -1344,10 +1344,21 @@ local function receive_fields(player, formname, fields)
 		end
 		return true
 	end
+	-- Prevent interaction across the map on player being teleported, etc
+	local player_pos = player:get_pos()
+	if (not player_pos or vector.distance(player_pos, pos) > 25.0) then
+		formspec_closed_unchecked(name, pos_str)
+		minetest.close_formspec(name, BASENAME)
+		minetest.chat_send_player(name, "The Luacontroller is too far away!")
+	end
 	-- Check if the controller still exists and loaded
 	local node_name = minetest.get_node(pos).name
 	if (not node_name or node_name:sub(1, #BASENAME) ~= BASENAME) then
 		clear_opened_formspecs(pos)
+		minetest.chat_send_player(name, "The Luacontroller could not be found.")
+		-- Log because this should not normally happen
+		-- on_destruct should have already closed everything for all players and distance check stopping unloaded interaction
+		minetest.log("warning", name.." tried to interact with an unloaded or non-existent Luacontroller at "..pos_str)
 		return true
 	end
 	-- Handle player closing the formspec
