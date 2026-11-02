@@ -14,7 +14,7 @@
 -- set_port(pos, rule, state): activates/deactivates the mesecons according to the port states
 -- set_port_states(pos, ports, ignore_overheat): Applies new port states to a Luacontroller at pos
 -- run_inner(pos, code, event): runs code on the controller at pos and event
--- update_code(meta, code): installs new code, without resetting LCID
+-- update_code(pos, meta, code): installs new code, without resetting LCID
 -- update_formspec(meta, code, errmsg, selected_tab, mem_text): updates the formspec and prints error messages
 -- reset_meta(pos, code, errmsg): performs a software-reset, installs new code and prints error message
 -- run(pos, event): a wrapper for run_inner which gets code & handles errors via reset_meta
@@ -920,7 +920,7 @@ local function run_inner(pos, code, event)
 	return ok, res1
 end
 
-local function update_code(meta, code)
+local function update_code(pos, meta, code)
 	code = code or ""
 	local err = nil
 	-- Limit code length to values set by mesecon.luacontroller_code_maxlen
@@ -1022,7 +1022,7 @@ end
 
 local function reset_meta(pos, code, errmsg)
 	local meta = minetest.get_meta(pos)
-	local err = update_code(meta, code)
+	local err = update_code(pos, meta, code)
 	-- Code could not be saved correctly, display what is actually in the controller
 	if err ~= nil then code = meta:get_string("code") end
 	update_formspec(meta, code, err or errmsg, 1, "")
@@ -1192,7 +1192,7 @@ local function on_receive_fields(pos, _, fields, sender)
 		local limit = is_library and 0 or get_max_library_calls()
 		if calls > limit then
 			local errmsg = "Too many load_library() calls ("..calls.."). Limit is "..limit.."."
-			update_code(meta, "")
+			update_code(pos, meta, "")
 			update_formspec(meta, code, errmsg, 1, "")
 			return
 		end
@@ -1201,17 +1201,17 @@ local function on_receive_fields(pos, _, fields, sender)
 		if is_library then
 			if not library_name or library_name == "" then
 				-- Clear the code from "code" metadata but not formspec so user does not lose it
-				update_code(meta, "")
+				update_code(pos, meta, "")
 				update_formspec(meta, code, "Library name cannot be empty!", 1, "")
 				return
 			end
 			if #library_name > 256 then
-				update_code(meta, "")
+				update_code(pos, meta, "")
 				update_formspec(meta, code, "Library name too long (max 256).", 1, "")
 				return
 			end
 			if not library_name:match("^[A-Za-z0-9,%.%-%_=+@#%%*]+$") then
-				update_code(meta, "")
+				update_code(pos, meta, "")
 				update_formspec(meta, code, "Library name contains invalid characters.", 1, "")
 				return
 			end
@@ -1225,7 +1225,7 @@ local function on_receive_fields(pos, _, fields, sender)
 			if old_fullname ~= fullname then
 				local other = storage:get_string(fullname)
 				if other ~= "" and other ~= curpos_str then
-					update_code(meta, "")
+					update_code(pos, meta, "")
 					update_formspec(meta, code, "Duplicate library name for another controller.", 1, "")
 					return
 				end
@@ -1239,7 +1239,7 @@ local function on_receive_fields(pos, _, fields, sender)
 			end
 			
 			-- Save code and library metadata (no execution)
-			local err = update_code(meta, code)
+			local err = update_code(pos, meta, code)
 			meta:set_string("library_fullname", fullname)
 			meta:set_string("library_name", library_name)
 			meta:set_int("is_library", 1)
@@ -1247,7 +1247,7 @@ local function on_receive_fields(pos, _, fields, sender)
 
 			-- Error occured when saving code - show it
 			if err ~= nil then
-				update_formspec(meta, meta:get_string("code"), err, 1, "")
+				update_formspec(meta, code, err, 1, "")
 				return
 			end
 			
